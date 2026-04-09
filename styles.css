@@ -190,6 +190,13 @@ button {
   gap: 12px;
 }
 
+.hero-topline {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
 .hero h2 {
   font-size: clamp(2rem, 4vw, 3.35rem);
 }
@@ -339,7 +346,12 @@ button {
   font-weight: 700;
 }
 
+.logout-btn {
+  white-space: nowrap;
+}
+
 .primary-btn,
+.danger-btn,
 .ghost-btn,
 .view-switch button,
 .filter-chip,
@@ -357,6 +369,12 @@ button {
   background: linear-gradient(135deg, var(--coral), #f78b58);
   color: white;
   box-shadow: 0 12px 28px rgba(236, 107, 86, 0.28);
+}
+
+.danger-btn {
+  background: linear-gradient(135deg, var(--navy), #284f71);
+  color: white;
+  box-shadow: 0 12px 28px rgba(23, 50, 77, 0.24);
 }
 
 .ghost-btn,
@@ -864,6 +882,43 @@ textarea {
   margin: 0;
 }
 
+.notice-banner {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(23, 50, 77, 0.14);
+  background: rgba(255, 255, 255, 0.8);
+}
+
+.notice-banner .helper-line {
+  color: inherit;
+}
+
+.notice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.notice-banner.is-info {
+  color: var(--navy);
+  background: rgba(77, 140, 200, 0.12);
+  border-color: rgba(77, 140, 200, 0.24);
+}
+
+.notice-banner.is-success {
+  color: #155745;
+  background: rgba(44, 143, 120, 0.12);
+  border-color: rgba(44, 143, 120, 0.26);
+}
+
+.notice-banner.is-warning {
+  color: #7a3b17;
+  background: rgba(240, 179, 74, 0.18);
+  border-color: rgba(236, 107, 86, 0.24);
+}
+
 .empty-copy {
   padding: 18px 0;
 }
@@ -900,6 +955,11 @@ textarea {
   .month-grid,
   .calendar-week {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .hero-topline {
+    flex-direction: column;
+    align-items: stretch;
   }
 }
 

@@ -36,13 +36,18 @@ const CHECKIN_META = {
 const refs = {
   authScreen: document.querySelector("#authScreen"),
   authTabs: document.querySelector("#authTabs"),
+  authNotice: document.querySelector("#authNotice"),
   authMessage: document.querySelector("#authMessage"),
+  authNoticeActions: document.querySelector("#authNoticeActions"),
   setupHelp: document.querySelector("#setupHelp"),
   signInForm: document.querySelector("#signInForm"),
   signUpForm: document.querySelector("#signUpForm"),
   resetRequestForm: document.querySelector("#resetRequestForm"),
   passwordUpdateForm: document.querySelector("#passwordUpdateForm"),
   appShell: document.querySelector("#appShell"),
+  appNotice: document.querySelector("#appNotice"),
+  appNoticeMessage: document.querySelector("#appNoticeMessage"),
+  appNoticeActions: document.querySelector("#appNoticeActions"),
   sessionBadge: document.querySelector("#sessionBadge"),
   typeFilters: document.querySelector("#typeFilters"),
   miniTimeline: document.querySelector("#miniTimeline"),
@@ -85,9 +90,12 @@ let state = {
     status: "loading",
     view: "sign-in",
     message: "",
+    messageTone: "info",
+    messageActions: [],
     profile: null,
     session: null,
   },
+  notice: defaultNoticeState(),
   members: [],
   events: [],
   feed: [],
@@ -102,7 +110,9 @@ async function boot() {
   if (!hasSupabaseConfig()) {
     state.auth.status = "setup";
     state.auth.view = "setup";
-    state.auth.message = "Supabase credentials are missing. Add config.js values or GitHub Actions secrets.";
+    setAuthNotice("Supabase credentials are missing. Add config.js values or GitHub Actions secrets.", {
+      tone: "warning",
+    });
     render();
     return;
   }
@@ -123,7 +133,7 @@ async function boot() {
   const { data: sessionData, error } = await app.supabase.auth.getSession();
   if (error) {
     state.auth.status = "signed_out";
-    state.auth.message = extractErrorMessage(error);
+    setAuthNotice(extractErrorMessage(error), { tone: "warning" });
     render();
     return;
   }
@@ -198,6 +208,12 @@ function wireEvents() {
 }
 
 async function handleDocumentClick(event) {
+  const noticeButton = event.target.closest("[data-notice-action]");
+  if (noticeButton) {
+    handleNoticeAction(noticeButton.dataset.noticeAction, noticeButton.dataset.noticeTarget);
+    return;
+  }
+
   const authButton = event.target.closest("[data-auth-view]");
   if (authButton) {
     setAuthView(authButton.dataset.authView);
@@ -241,7 +257,7 @@ async function handleAuthStateChange(event, session) {
     state.auth.session = session;
     state.auth.status = "password_recovery";
     state.auth.view = "update-password";
-    state.auth.message = "Reset link confirmed. Enter a new password.";
+    setAuthNotice("Reset link confirmed. Enter a new password.", { tone: "info" });
     render();
     return;
   }
@@ -268,17 +284,23 @@ async function loadAuthedData(user) {
   }
 
   state.auth.status = "loading";
-  state.auth.message = "";
+  clearAuthNotice();
   render();
 
   try {
     app.loadingData = true;
+    clearAuthNotice();
 
     const profile = await fetchCurrentProfile(user.id);
     if (!profile) {
       state.auth.status = "signed_out";
-      state.auth.message =
-        "This login is authenticated, but no player or manager profile is linked yet. Players should use the sign-up form, and managers must be created manually in Supabase.";
+      setAuthNotice(
+        "This login is authenticated, but no player or manager profile is linked yet. Players should use the sign-up form, and managers must be created manually in Supabase.",
+        {
+          tone: "warning",
+          actions: [{ id: "open-sign-up", label: "Player sign up", variant: "primary" }],
+        },
+      );
       state.auth.profile = null;
       state.auth.session = null;
       render();
@@ -307,12 +329,13 @@ async function loadAuthedData(user) {
     state.feed = buildFeed(state.events, availabilityRows, state.members);
     state.auth.status = "signed_in";
     state.auth.view = "sign-in";
+    clearAuthNotice();
     state.ui.selectedEventId = ensureSelectedEventId();
     render();
     persistUi();
   } catch (error) {
     state.auth.status = "signed_out";
-    state.auth.message = extractErrorMessage(error);
+    setAuthNotice(extractErrorMessage(error), { tone: "warning" });
     state.auth.profile = null;
     state.auth.session = null;
     render();
@@ -408,12 +431,12 @@ async function handleSignIn() {
   const password = compactString(formData.get("password"));
 
   if (!loginIdentifier || !password) {
-    state.auth.message = "Enter your username or email and password.";
+    setAuthNotice("Enter your username or email and password.", { tone: "warning" });
     renderAuth();
     return;
   }
 
-  state.auth.message = "Signing you in...";
+  setAuthNotice("Signing you in...", { tone: "info" });
   renderAuth();
 
   try {
@@ -426,7 +449,10 @@ async function handleSignIn() {
       throw error;
     }
   } catch (error) {
-    state.auth.message = extractErrorMessage(error);
+    setAuthNotice(extractErrorMessage(error), {
+      tone: "warning",
+      actions: [{ id: "open-reset", label: "Reset password", variant: "primary" }],
+    });
     renderAuth();
   }
 }
@@ -444,42 +470,44 @@ async function handlePlayerSignUp() {
   const confirmPassword = compactString(formData.get("confirmPassword"));
 
   if (!email || !username || !displayName || !password || !confirmPassword) {
-    state.auth.message = "Fill in every signup field to create a player account.";
+    setAuthNotice("Fill in every signup field to create a player account.", { tone: "warning" });
     renderAuth();
     return;
   }
 
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
-    state.auth.message = "Enter a valid email address.";
+    setAuthNotice("Enter a valid email address.", { tone: "warning" });
     renderAuth();
     return;
   }
 
   if (!/^[a-z0-9._-]{3,30}$/.test(username)) {
-    state.auth.message = "Use 3-30 lowercase letters, numbers, dots, hyphens, or underscores for the username.";
+    setAuthNotice("Use 3-30 lowercase letters, numbers, dots, hyphens, or underscores for the username.", {
+      tone: "warning",
+    });
     renderAuth();
     return;
   }
 
   if (displayName.length < 2) {
-    state.auth.message = "Enter the name you want teammates to see.";
+    setAuthNotice("Enter the name you want teammates to see.", { tone: "warning" });
     renderAuth();
     return;
   }
 
   if (password.length < 8) {
-    state.auth.message = "Use a password with at least 8 characters.";
+    setAuthNotice("Use a password with at least 8 characters.", { tone: "warning" });
     renderAuth();
     return;
   }
 
   if (password !== confirmPassword) {
-    state.auth.message = "The passwords do not match.";
+    setAuthNotice("The passwords do not match.", { tone: "warning" });
     renderAuth();
     return;
   }
 
-  state.auth.message = "Creating your player account...";
+  setAuthNotice("Creating your player account...", { tone: "info" });
   renderAuth();
 
   try {
@@ -504,18 +532,20 @@ async function handlePlayerSignUp() {
     setSignInLoginValue(username);
 
     if (data.session) {
-      state.auth.message = "Player account created. Loading your team workspace...";
+      setAuthNotice("Player account created. Loading your team workspace...", { tone: "success" });
       renderAuth();
       return;
     }
 
     state.auth.status = "signed_out";
     state.auth.view = "sign-in";
-    state.auth.message =
-      "Player account created. Check your email to confirm it, then sign in with your username or email.";
+    setAuthNotice("Player account created. Check your email to confirm it, then sign in with your username or email.", {
+      tone: "success",
+      actions: [{ id: "open-sign-in", label: "Back to sign in", variant: "primary" }],
+    });
     renderAuth();
   } catch (error) {
-    state.auth.message = extractErrorMessage(error);
+    setAuthNotice(extractErrorMessage(error), { tone: "warning" });
     renderAuth();
   }
 }
@@ -528,12 +558,12 @@ async function handlePasswordResetRequest() {
   const formData = new FormData(refs.resetRequestForm);
   const loginIdentifier = compactString(formData.get("login"));
   if (!loginIdentifier) {
-    state.auth.message = "Enter the username or email for the account you want to reset.";
+    setAuthNotice("Enter the username or email for the account you want to reset.", { tone: "warning" });
     renderAuth();
     return;
   }
 
-  state.auth.message = "Sending a reset link...";
+  setAuthNotice("Sending a reset link...", { tone: "info" });
   renderAuth();
 
   try {
@@ -544,11 +574,13 @@ async function handlePasswordResetRequest() {
     if (error) {
       throw error;
     }
-    state.auth.message =
-      "Reset link sent. Check the account email inbox, then open the link and set a new password.";
+    setAuthNotice("Reset link sent. Check the account email inbox, then open the link and set a new password.", {
+      tone: "success",
+      actions: [{ id: "open-sign-in", label: "Back to sign in", variant: "primary" }],
+    });
     renderAuth();
   } catch (error) {
-    state.auth.message = extractErrorMessage(error);
+    setAuthNotice(extractErrorMessage(error), { tone: "warning" });
     renderAuth();
   }
 }
@@ -563,28 +595,28 @@ async function handlePasswordUpdate() {
   const confirmPassword = compactString(formData.get("confirmPassword"));
 
   if (!password || password.length < 8) {
-    state.auth.message = "Use a password with at least 8 characters.";
+    setAuthNotice("Use a password with at least 8 characters.", { tone: "warning" });
     renderAuth();
     return;
   }
 
   if (password !== confirmPassword) {
-    state.auth.message = "The passwords do not match.";
+    setAuthNotice("The passwords do not match.", { tone: "warning" });
     renderAuth();
     return;
   }
 
-  state.auth.message = "Saving your new password...";
+  setAuthNotice("Saving your new password...", { tone: "info" });
   renderAuth();
 
   const { error } = await app.supabase.auth.updateUser({ password });
   if (error) {
-    state.auth.message = extractErrorMessage(error);
+    setAuthNotice(extractErrorMessage(error), { tone: "warning" });
     renderAuth();
     return;
   }
 
-  state.auth.message = "Password updated. Reloading your team workspace...";
+  setAuthNotice("Password updated. Reloading your team workspace...", { tone: "success" });
   if (state.auth.session?.user) {
     await loadAuthedData(state.auth.session.user);
     return;
@@ -601,7 +633,10 @@ async function handleSignOut() {
 
   const { error } = await app.supabase.auth.signOut();
   if (error) {
-    window.alert(extractErrorMessage(error));
+    showAppNotice(extractErrorMessage(error), {
+      tone: "warning",
+      actions: [{ id: "sign-out", label: "Try again", variant: "danger" }],
+    });
   }
 }
 
@@ -626,6 +661,42 @@ function buildPasswordResetRedirect() {
   return window.location.origin + window.location.pathname;
 }
 
+function handleNoticeAction(action, target) {
+  if (!action) {
+    return;
+  }
+
+  if (action === "dismiss") {
+    if (target === "app") {
+      clearAppNotice();
+      renderApp();
+      return;
+    }
+    clearAuthNotice();
+    renderAuth();
+    return;
+  }
+
+  if (action === "open-sign-in") {
+    setAuthView("sign-in");
+    return;
+  }
+
+  if (action === "open-sign-up") {
+    setAuthView("sign-up");
+    return;
+  }
+
+  if (action === "open-reset") {
+    setAuthView("reset");
+    return;
+  }
+
+  if (action === "sign-out") {
+    void handleSignOut();
+  }
+}
+
 function render() {
   renderAuth();
   renderApp();
@@ -639,8 +710,18 @@ function renderAuth() {
     (state.auth.status === "loading" && !state.auth.profile);
   refs.authScreen.classList.toggle("hidden", !shouldShowAuth);
   refs.appShell.classList.toggle("hidden", shouldShowAuth && !isSignedIn());
-  refs.authMessage.textContent = state.auth.message || "";
   refs.setupHelp.classList.toggle("hidden", state.auth.status !== "setup");
+  renderNotice({
+    container: refs.authNotice,
+    messageNode: refs.authMessage,
+    actionsNode: refs.authNoticeActions,
+    notice: {
+      message: state.auth.message,
+      tone: state.auth.messageTone,
+      actions: state.auth.messageActions,
+    },
+    target: "auth",
+  });
 
   const activeView = state.auth.status === "setup" ? "setup" : state.auth.view;
   [...refs.authTabs.querySelectorAll("button")].forEach((button) => {
@@ -664,6 +745,13 @@ function renderApp() {
   refs.createEventBtn.classList.toggle("hidden", !isManager());
   refs.seedDemoBtn.classList.toggle("hidden", !isManager());
   refs.sessionBadge.textContent = `${state.auth.profile.displayName} | ${capitalize(state.auth.profile.role)}`;
+  renderNotice({
+    container: refs.appNotice,
+    messageNode: refs.appNoticeMessage,
+    actionsNode: refs.appNoticeActions,
+    notice: state.notice,
+    target: "app",
+  });
 
   renderFilters();
   renderHeader();
@@ -674,6 +762,39 @@ function renderApp() {
   renderRosterBoard();
   renderDrawer();
   syncActiveView();
+}
+
+function renderNotice({ container, messageNode, actionsNode, notice, target }) {
+  const message = notice?.message || "";
+  if (!message) {
+    container.className = "notice-banner hidden";
+    messageNode.textContent = "";
+    actionsNode.innerHTML = "";
+    return;
+  }
+
+  container.className = `notice-banner is-${notice.tone || "info"}`;
+  messageNode.textContent = message;
+  actionsNode.innerHTML = (notice.actions || [])
+    .map((action) => {
+      const variantClass = action.variant === "primary"
+        ? "primary-btn"
+        : action.variant === "danger"
+          ? "danger-btn"
+          : "ghost-btn";
+
+      return `
+        <button
+          type="button"
+          class="${variantClass}"
+          data-notice-action="${escapeAttribute(action.id)}"
+          data-notice-target="${escapeAttribute(target)}"
+        >
+          ${escapeHtml(action.label)}
+        </button>
+      `;
+    })
+    .join("");
 }
 
 function renderHeader() {
@@ -1379,7 +1500,7 @@ async function handleEventFormSubmit() {
   const end = formData.get("end");
 
   if (!start || !end || new Date(end) <= new Date(start)) {
-    window.alert("Please choose an end time after the start time.");
+    showAppNotice("Please choose an end time after the start time.", { tone: "warning" });
     return;
   }
 
@@ -1430,8 +1551,9 @@ async function handleEventFormSubmit() {
 
     closeModal();
     await refreshData();
+    showAppNotice(eventId ? "Event updated successfully." : "Event saved successfully.", { tone: "success" });
   } catch (error) {
-    window.alert(extractErrorMessage(error));
+    showAppNotice(extractErrorMessage(error), { tone: "warning" });
   }
 }
 
@@ -1494,9 +1616,9 @@ async function copyReminder(eventId) {
   const reminder = `${eventRecord.title} - ${formatEventWindow(eventRecord)}${eventRecord.location ? ` - ${eventRecord.location}` : ""}`;
   try {
     await navigator.clipboard.writeText(reminder);
-    window.alert("Reminder copied to your clipboard.");
+    showAppNotice("Reminder copied to your clipboard.", { tone: "success" });
   } catch (error) {
-    window.alert(reminder);
+    showAppNotice(reminder, { tone: "info" });
   }
 }
 
@@ -1511,11 +1633,12 @@ async function updateEventStatus(eventId, patch) {
     .eq("id", eventId);
 
   if (error) {
-    window.alert(extractErrorMessage(error));
+    showAppNotice(extractErrorMessage(error), { tone: "warning" });
     return;
   }
 
   await refreshData();
+  showAppNotice("Event status updated.", { tone: "success" });
 }
 
 async function saveReschedule(eventId) {
@@ -1529,7 +1652,7 @@ async function saveReschedule(eventId) {
   const endValue = endInput?.value || "";
 
   if (!startValue || !endValue || new Date(endValue) <= new Date(startValue)) {
-    window.alert("Please choose a valid new start and end time.");
+    showAppNotice("Please choose a valid new start and end time.", { tone: "warning" });
     return;
   }
 
@@ -1555,11 +1678,12 @@ async function saveReschedule(eventId) {
     .eq("id", eventId);
 
   if (error) {
-    window.alert(extractErrorMessage(error));
+    showAppNotice(extractErrorMessage(error), { tone: "warning" });
     return;
   }
 
   await refreshData();
+  showAppNotice("Event rescheduled.", { tone: "success" });
 }
 
 async function updateAvailability(eventId, memberId, patch) {
@@ -1574,11 +1698,12 @@ async function updateAvailability(eventId, memberId, patch) {
     .upsert(payload, { onConflict: "event_id,user_id" });
 
   if (error) {
-    window.alert(extractErrorMessage(error));
+    showAppNotice(extractErrorMessage(error), { tone: "warning" });
     return;
   }
 
   await refreshData();
+  showAppNotice("Availability updated.", { tone: "success" });
 }
 
 async function handleSeedDemo() {
@@ -1593,11 +1718,12 @@ async function handleSeedDemo() {
   const rows = buildDemoEventRows(state.auth.profile.teamId, state.auth.profile.id);
   const { error } = await app.supabase.from(EVENT_TABLE).insert(rows);
   if (error) {
-    window.alert(extractErrorMessage(error));
+    showAppNotice(extractErrorMessage(error), { tone: "warning" });
     return;
   }
 
   await refreshData();
+  showAppNotice("Demo schedule added for the team.", { tone: "success" });
 }
 
 function buildDemoEventRows(teamId, createdBy) {
@@ -1820,6 +1946,57 @@ function normalizeConfig(rawConfig) {
   return config;
 }
 
+function defaultNoticeState() {
+  return {
+    message: "",
+    tone: "info",
+    actions: [],
+  };
+}
+
+function ensureNoticeActions(actions = []) {
+  const normalized = actions.filter(Boolean);
+  if (normalized.some((action) => action.id === "dismiss")) {
+    return normalized;
+  }
+  return [...normalized, { id: "dismiss", label: "Dismiss", variant: "ghost" }];
+}
+
+function setAuthNotice(message, { tone = "info", actions = [] } = {}) {
+  state.auth.message = message;
+  state.auth.messageTone = tone;
+  state.auth.messageActions = message
+    ? actions.length || tone !== "info"
+      ? ensureNoticeActions(actions)
+      : []
+    : [];
+}
+
+function clearAuthNotice() {
+  state.auth.message = "";
+  state.auth.messageTone = "info";
+  state.auth.messageActions = [];
+}
+
+function showAppNotice(message, { tone = "warning", actions = [] } = {}) {
+  state.notice = {
+    message,
+    tone,
+    actions: message
+      ? actions.length || tone !== "info"
+        ? ensureNoticeActions(actions)
+        : []
+      : [],
+  };
+  if (isSignedIn()) {
+    renderApp();
+  }
+}
+
+function clearAppNotice() {
+  state.notice = defaultNoticeState();
+}
+
 function hasSupabaseConfig() {
   return Boolean(appConfig.supabaseUrl && appConfig.supabaseKey && window.supabase?.createClient);
 }
@@ -1827,7 +2004,8 @@ function hasSupabaseConfig() {
 function clearAuthedState() {
   state.auth.status = "signed_out";
   state.auth.view = "sign-in";
-  state.auth.message = "";
+  clearAuthNotice();
+  clearAppNotice();
   state.auth.profile = null;
   state.auth.session = null;
   state.members = [];
@@ -1840,7 +2018,7 @@ function setAuthView(nextView) {
     return;
   }
   state.auth.view = nextView;
-  state.auth.message = "";
+  clearAuthNotice();
   renderAuth();
 }
 

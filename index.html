@@ -28,7 +28,10 @@
           <button data-auth-view="reset">Reset password</button>
         </div>
 
-        <p id="authMessage" class="helper-line"></p>
+        <div id="authNotice" class="notice-banner hidden" role="status" aria-live="polite">
+          <p id="authMessage" class="helper-line"></p>
+          <div id="authNoticeActions" class="notice-actions"></div>
+        </div>
 
         <form id="signInForm" class="event-form">
           <label>
@@ -162,15 +165,23 @@
       <main class="workspace">
         <section class="hero panel sheen">
           <div class="hero-copy">
-            <p class="eyebrow">Scheduling Hub</p>
-            <h2 id="heroTitle">GTA Marvels Calendar</h2>
+            <div class="hero-topline">
+              <div>
+                <p class="eyebrow">Scheduling Hub</p>
+                <h2 id="heroTitle">GTA Marvels Calendar</h2>
+              </div>
+              <button id="signOutBtn" class="danger-btn logout-btn">Log out</button>
+            </div>
             <p id="heroSubtitle" class="muted"></p>
             <p id="syncNotice" class="helper-line"></p>
+            <div id="appNotice" class="notice-banner hidden" role="status" aria-live="polite">
+              <p id="appNoticeMessage" class="helper-line"></p>
+              <div id="appNoticeActions" class="notice-actions"></div>
+            </div>
             <div class="hero-actions">
               <span id="sessionBadge" class="session-badge"></span>
               <button id="createEventBtn" class="primary-btn">Create event</button>
               <button id="seedDemoBtn" class="ghost-btn">Seed demo</button>
-              <button id="signOutBtn" class="ghost-btn">Sign out</button>
             </div>
           </div>
 
