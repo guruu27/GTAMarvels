@@ -18,12 +18,13 @@
         <p class="eyebrow">Secure Team Access</p>
         <h1>TeamFlow</h1>
         <p class="muted">
-          Managers can view the full team availability board. Players can only
-          open events and submit their own availability.
+          Managers can view the full team availability board. Players can self-register,
+          then open events and submit only their own availability.
         </p>
 
         <div id="authTabs" class="auth-tabs">
           <button class="active" data-auth-view="sign-in">Sign in</button>
+          <button data-auth-view="sign-up">Player sign up</button>
           <button data-auth-view="reset">Reset password</button>
         </div>
 
@@ -45,7 +46,37 @@
           </label>
           <div class="form-actions">
             <button type="submit" class="primary-btn">Sign in</button>
-            <button type="button" class="ghost-btn" data-auth-view="reset">Forgot password?</button>
+            <button type="button" class="ghost-btn" data-auth-view="sign-up">Create player login</button>
+          </div>
+        </form>
+
+        <form id="signUpForm" class="event-form hidden">
+          <label>
+            <span>Email</span>
+            <input name="email" type="email" placeholder="player@example.com" required />
+          </label>
+          <label>
+            <span>Username</span>
+            <input name="username" type="text" placeholder="player07" minlength="3" required />
+          </label>
+          <label>
+            <span>Display name</span>
+            <input name="displayName" type="text" placeholder="Player Seven" required />
+          </label>
+          <label>
+            <span>Password</span>
+            <input name="password" type="password" minlength="8" placeholder="At least 8 characters" required />
+          </label>
+          <label>
+            <span>Confirm password</span>
+            <input name="confirmPassword" type="password" minlength="8" required />
+          </label>
+          <p class="helper-line">
+            Player accounts can self-register for the current team. Manager accounts are created manually.
+          </p>
+          <div class="form-actions">
+            <button type="submit" class="primary-btn">Create player account</button>
+            <button type="button" class="ghost-btn" data-auth-view="sign-in">Back to sign in</button>
           </div>
         </form>
 
@@ -98,8 +129,8 @@
           <p class="eyebrow">Scheduling Feature Clone</p>
           <h1>TeamFlow</h1>
           <p class="muted">
-            SportEasy-inspired scheduling with manager/player logins, password reset,
-            and role-based availability access.
+            SportEasy-inspired scheduling with player self-signup, manager approval,
+            password reset, and role-based availability access.
           </p>
         </section>
 

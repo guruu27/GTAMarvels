@@ -39,6 +39,7 @@ const refs = {
   authMessage: document.querySelector("#authMessage"),
   setupHelp: document.querySelector("#setupHelp"),
   signInForm: document.querySelector("#signInForm"),
+  signUpForm: document.querySelector("#signUpForm"),
   resetRequestForm: document.querySelector("#resetRequestForm"),
   passwordUpdateForm: document.querySelector("#passwordUpdateForm"),
   appShell: document.querySelector("#appShell"),
@@ -169,6 +170,10 @@ function wireEvents() {
     event.preventDefault();
     void handleSignIn();
   });
+  refs.signUpForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void handlePlayerSignUp();
+  });
   refs.resetRequestForm.addEventListener("submit", (event) => {
     event.preventDefault();
     void handlePasswordResetRequest();
@@ -273,7 +278,7 @@ async function loadAuthedData(user) {
     if (!profile) {
       state.auth.status = "signed_out";
       state.auth.message =
-        "This login exists, but no team profile is linked yet. Create the profile in Supabase SQL, then sign in again.";
+        "This login is authenticated, but no player or manager profile is linked yet. Players should use the sign-up form, and managers must be created manually in Supabase.";
       state.auth.profile = null;
       state.auth.session = null;
       render();
@@ -426,6 +431,95 @@ async function handleSignIn() {
   }
 }
 
+async function handlePlayerSignUp() {
+  if (!app.supabase) {
+    return;
+  }
+
+  const formData = new FormData(refs.signUpForm);
+  const email = compactString(formData.get("email")).toLowerCase();
+  const username = normalizeUsername(formData.get("username"));
+  const displayName = compactString(formData.get("displayName"));
+  const password = compactString(formData.get("password"));
+  const confirmPassword = compactString(formData.get("confirmPassword"));
+
+  if (!email || !username || !displayName || !password || !confirmPassword) {
+    state.auth.message = "Fill in every signup field to create a player account.";
+    renderAuth();
+    return;
+  }
+
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+    state.auth.message = "Enter a valid email address.";
+    renderAuth();
+    return;
+  }
+
+  if (!/^[a-z0-9._-]{3,30}$/.test(username)) {
+    state.auth.message = "Use 3-30 lowercase letters, numbers, dots, hyphens, or underscores for the username.";
+    renderAuth();
+    return;
+  }
+
+  if (displayName.length < 2) {
+    state.auth.message = "Enter the name you want teammates to see.";
+    renderAuth();
+    return;
+  }
+
+  if (password.length < 8) {
+    state.auth.message = "Use a password with at least 8 characters.";
+    renderAuth();
+    return;
+  }
+
+  if (password !== confirmPassword) {
+    state.auth.message = "The passwords do not match.";
+    renderAuth();
+    return;
+  }
+
+  state.auth.message = "Creating your player account...";
+  renderAuth();
+
+  try {
+    const { data, error } = await app.supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: {
+          registration_mode: "player_self_signup",
+          team_id: appConfig.teamId,
+          username,
+          display_name: displayName,
+        },
+      },
+    });
+
+    if (error) {
+      throw error;
+    }
+
+    refs.signUpForm.reset();
+    setSignInLoginValue(username);
+
+    if (data.session) {
+      state.auth.message = "Player account created. Loading your team workspace...";
+      renderAuth();
+      return;
+    }
+
+    state.auth.status = "signed_out";
+    state.auth.view = "sign-in";
+    state.auth.message =
+      "Player account created. Check your email to confirm it, then sign in with your username or email.";
+    renderAuth();
+  } catch (error) {
+    state.auth.message = extractErrorMessage(error);
+    renderAuth();
+  }
+}
+
 async function handlePasswordResetRequest() {
   if (!app.supabase) {
     return;
@@ -555,6 +649,7 @@ function renderAuth() {
   });
 
   refs.signInForm.classList.toggle("hidden", activeView !== "sign-in");
+  refs.signUpForm.classList.toggle("hidden", activeView !== "sign-up");
   refs.resetRequestForm.classList.toggle("hidden", activeView !== "reset");
   refs.passwordUpdateForm.classList.toggle("hidden", activeView !== "update-password");
 }
@@ -1939,6 +2034,17 @@ function nextWeekdayDate(baseDate, weekday, hour, minute) {
 
 function compactString(value) {
   return String(value || "").trim();
+}
+
+function normalizeUsername(value) {
+  return compactString(value).toLowerCase();
+}
+
+function setSignInLoginValue(value) {
+  const loginInput = refs.signInForm?.elements?.namedItem("login");
+  if (loginInput && "value" in loginInput) {
+    loginInput.value = value;
+  }
 }
 
 function clampNumber(value, min, max, fallback) {

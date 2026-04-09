@@ -23,9 +23,13 @@ $$;
 create table if not exists public.teams (
   id text primary key,
   name text not null,
+  allow_self_signup boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.teams
+add column if not exists allow_self_signup boolean not null default false;
 
 create table if not exists public.team_profiles (
   id uuid primary key references auth.users(id) on delete cascade,
@@ -214,6 +218,103 @@ begin
       updated_at = now();
 end;
 $$;
+
+create or replace function public.sync_player_profile_from_auth_user()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  v_registration_mode text;
+  v_team_id text;
+  v_username text;
+  v_display_name text;
+  v_email text;
+begin
+  v_registration_mode := coalesce(new.raw_user_meta_data ->> 'registration_mode', '');
+  if v_registration_mode <> 'player_self_signup' then
+    return new;
+  end if;
+
+  if tg_op = 'UPDATE' and (old.email_confirmed_at is not null or new.email_confirmed_at is null) then
+    return new;
+  end if;
+
+  if new.email_confirmed_at is null then
+    return new;
+  end if;
+
+  v_team_id := lower(trim(coalesce(new.raw_user_meta_data ->> 'team_id', '')));
+  v_username := lower(trim(coalesce(new.raw_user_meta_data ->> 'username', '')));
+  v_display_name := trim(coalesce(new.raw_user_meta_data ->> 'display_name', ''));
+  v_email := lower(trim(coalesce(new.email, '')));
+
+  if v_email = '' then
+    raise exception 'Player signup requires an email address';
+  end if;
+
+  if v_team_id = '' then
+    raise exception 'Player signup is missing the team identifier';
+  end if;
+
+  if not exists (
+    select 1
+    from public.teams
+    where id = v_team_id
+      and allow_self_signup
+  ) then
+    raise exception 'Player self-registration is not enabled for team %', v_team_id;
+  end if;
+
+  if v_username !~ '^[a-z0-9._-]{3,30}$' then
+    raise exception 'Usernames must be 3-30 characters and can only use lowercase letters, numbers, dots, hyphens, or underscores';
+  end if;
+
+  if char_length(v_display_name) < 2 then
+    raise exception 'Display name must be at least 2 characters';
+  end if;
+
+  insert into public.team_profiles (id, team_id, username, email, display_name, role)
+  values (new.id, v_team_id, v_username, v_email, v_display_name, 'player')
+  on conflict (id) do nothing;
+
+  return new;
+exception
+  when unique_violation then
+    if exists (
+      select 1
+      from public.team_profiles
+      where lower(username) = v_username
+        and id <> new.id
+    ) then
+      raise exception 'Username % is already taken', v_username;
+    end if;
+
+    if exists (
+      select 1
+      from public.team_profiles
+      where lower(email) = v_email
+        and id <> new.id
+    ) then
+      raise exception 'An account for % already exists', v_email;
+    end if;
+
+    raise;
+end;
+$$;
+
+drop trigger if exists sync_player_profile_after_auth_insert on auth.users;
+create trigger sync_player_profile_after_auth_insert
+after insert on auth.users
+for each row
+execute function public.sync_player_profile_from_auth_user();
+
+drop trigger if exists sync_player_profile_after_auth_update on auth.users;
+create trigger sync_player_profile_after_auth_update
+after update of email_confirmed_at on auth.users
+for each row
+execute function public.sync_player_profile_from_auth_user();
 
 create or replace function public.seed_availability_for_event()
 returns trigger
@@ -465,7 +566,11 @@ grant select, insert, update on public.team_event_availability to authenticated;
 grant execute on function public.resolve_login_identifier(text) to anon, authenticated;
 
 select public.ensure_team_exists('gta-marvels', 'GTA Marvels');
+update public.teams
+set allow_self_signup = true
+where id = 'gta-marvels';
 
--- Example onboarding after you create auth users in Supabase:
+-- Example onboarding after you create manager auth users in Supabase:
 -- select public.create_profile_for_email('manager@example.com', 'gta-marvels', 'manager01', 'Team Manager', 'manager');
--- select public.create_profile_for_email('player@example.com', 'gta-marvels', 'player07', 'Player Seven', 'player');
+--
+-- Players can self-register through the app once email/password signup is enabled in Supabase Auth.
