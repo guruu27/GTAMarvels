@@ -13,14 +13,93 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <div class="app-shell">
+    <div id="authScreen" class="auth-screen">
+      <section class="auth-card panel sheen">
+        <p class="eyebrow">Secure Team Access</p>
+        <h1>TeamFlow</h1>
+        <p class="muted">
+          Managers can view the full team availability board. Players can only
+          open events and submit their own availability.
+        </p>
+
+        <div id="authTabs" class="auth-tabs">
+          <button class="active" data-auth-view="sign-in">Sign in</button>
+          <button data-auth-view="reset">Reset password</button>
+        </div>
+
+        <p id="authMessage" class="helper-line"></p>
+
+        <form id="signInForm" class="event-form">
+          <label>
+            <span>Username or email</span>
+            <input
+              name="login"
+              type="text"
+              placeholder="manager01 or manager@example.com"
+              required
+            />
+          </label>
+          <label>
+            <span>Password</span>
+            <input name="password" type="password" placeholder="Enter password" required />
+          </label>
+          <div class="form-actions">
+            <button type="submit" class="primary-btn">Sign in</button>
+            <button type="button" class="ghost-btn" data-auth-view="reset">Forgot password?</button>
+          </div>
+        </form>
+
+        <form id="resetRequestForm" class="event-form hidden">
+          <label>
+            <span>Username or email</span>
+            <input
+              name="login"
+              type="text"
+              placeholder="player07 or player@example.com"
+              required
+            />
+          </label>
+          <p class="helper-line">
+            Password reset links are sent to the email address linked to the account.
+          </p>
+          <div class="form-actions">
+            <button type="submit" class="primary-btn">Send reset link</button>
+            <button type="button" class="ghost-btn" data-auth-view="sign-in">Back to sign in</button>
+          </div>
+        </form>
+
+        <form id="passwordUpdateForm" class="event-form hidden">
+          <label>
+            <span>New password</span>
+            <input name="password" type="password" minlength="8" required />
+          </label>
+          <label>
+            <span>Confirm password</span>
+            <input name="confirmPassword" type="password" minlength="8" required />
+          </label>
+          <div class="form-actions">
+            <button type="submit" class="primary-btn">Update password</button>
+          </div>
+        </form>
+
+        <div id="setupHelp" class="empty-note hidden">
+          <strong>Supabase setup required</strong>
+          <span class="helper-line">
+            Add your Supabase URL and publishable key in `config.js` or GitHub Actions secrets,
+            then reload the page.
+          </span>
+        </div>
+      </section>
+    </div>
+
+    <div id="appShell" class="app-shell hidden">
       <aside class="sidebar">
         <section class="brand-card panel sheen">
           <p class="eyebrow">Scheduling Feature Clone</p>
           <h1>TeamFlow</h1>
           <p class="muted">
-            A local-first scheduling web app inspired by SportEasy's calendar,
-            attendance, and last-minute change workflows.
+            SportEasy-inspired scheduling with manager/player logins, password reset,
+            and role-based availability access.
           </p>
         </section>
 
@@ -53,12 +132,14 @@
         <section class="hero panel sheen">
           <div class="hero-copy">
             <p class="eyebrow">Scheduling Hub</p>
-            <h2 id="heroTitle">Northside Falcons Calendar</h2>
+            <h2 id="heroTitle">GTA Marvels Calendar</h2>
             <p id="heroSubtitle" class="muted"></p>
             <p id="syncNotice" class="helper-line"></p>
             <div class="hero-actions">
+              <span id="sessionBadge" class="session-badge"></span>
               <button id="createEventBtn" class="primary-btn">Create event</button>
-              <button id="resetDemoBtn" class="ghost-btn">Reset demo</button>
+              <button id="seedDemoBtn" class="ghost-btn">Seed demo</button>
+              <button id="signOutBtn" class="ghost-btn">Sign out</button>
             </div>
           </div>
 
@@ -68,11 +149,11 @@
               <strong id="nextEventLabel">-</strong>
             </article>
             <article class="stat-card">
-              <span>Confirmed</span>
+              <span>Availability</span>
               <strong id="availabilityLabel">-</strong>
             </article>
             <article class="stat-card">
-              <span>Replies waiting</span>
+              <span>Role insight</span>
               <strong id="pendingLabel">-</strong>
             </article>
           </div>
@@ -128,8 +209,8 @@
               <p class="eyebrow">Event details</p>
               <h2>Pick an event</h2>
               <p class="muted">
-                Click any event card to edit scheduling details, send reminders,
-                reschedule fixtures, or track attendance live.
+                Managers can edit events and review team replies. Players can only
+                view the event details and submit their own availability.
               </p>
             </div>
           </div>
@@ -202,11 +283,7 @@
 
             <label>
               <span>Address</span>
-              <input
-                name="address"
-                type="text"
-                placeholder="14 Station Road, Manchester"
-              />
+              <input name="address" type="text" placeholder="14 Station Road, Manchester" />
             </label>
           </div>
 

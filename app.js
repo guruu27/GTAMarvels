@@ -1,24 +1,30 @@
-const STORAGE_KEY = "teamflow-scheduler-v1";
-const CLOUD_TABLE = "teamflow_boards";
+const STORAGE_KEY = "teamflow-ui-v3";
+const PROFILE_TABLE = "team_profiles";
+const TEAM_TABLE = "teams";
+const EVENT_TABLE = "team_events";
+const AVAILABILITY_TABLE = "team_event_availability";
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const DEFAULT_CONFIG = {
-  storageMode: "local",
   supabaseUrl: "",
   supabaseKey: "",
-  supabaseBoardId: "northside-falcons",
+  teamId: "gta-marvels",
+  teamName: "GTA Marvels",
 };
+
 const TYPE_META = {
   practice: { label: "Practice", accent: "#2c8f78" },
   game: { label: "Game", accent: "#ec6b56" },
   tournament: { label: "Tournament", accent: "#4d8cc8" },
   social: { label: "Team event", accent: "#b85a77" },
 };
+
 const RESPONSE_META = {
   pending: "Waiting",
   available: "Available",
   maybe: "Maybe",
   unavailable: "Unavailable",
 };
+
 const CHECKIN_META = {
   pending: "Not tracked yet",
   on_time: "On time",
@@ -28,6 +34,15 @@ const CHECKIN_META = {
 };
 
 const refs = {
+  authScreen: document.querySelector("#authScreen"),
+  authTabs: document.querySelector("#authTabs"),
+  authMessage: document.querySelector("#authMessage"),
+  setupHelp: document.querySelector("#setupHelp"),
+  signInForm: document.querySelector("#signInForm"),
+  resetRequestForm: document.querySelector("#resetRequestForm"),
+  passwordUpdateForm: document.querySelector("#passwordUpdateForm"),
+  appShell: document.querySelector("#appShell"),
+  sessionBadge: document.querySelector("#sessionBadge"),
   typeFilters: document.querySelector("#typeFilters"),
   miniTimeline: document.querySelector("#miniTimeline"),
   feedList: document.querySelector("#feedList"),
@@ -46,96 +61,100 @@ const refs = {
   rosterBoard: document.querySelector("#rosterBoard"),
   eventDrawer: document.querySelector("#eventDrawer"),
   createEventBtn: document.querySelector("#createEventBtn"),
-  resetDemoBtn: document.querySelector("#resetDemoBtn"),
+  seedDemoBtn: document.querySelector("#seedDemoBtn"),
+  signOutBtn: document.querySelector("#signOutBtn"),
   eventModal: document.querySelector("#eventModal"),
   modalTitle: document.querySelector("#modalTitle"),
   eventForm: document.querySelector("#eventForm"),
 };
 
 const appConfig = normalizeConfig(window.TEAMFLOW_CONFIG);
-const syncState = {
-  mode: "local",
-  client: null,
-  saveTimer: 0,
-  pollingTimer: 0,
-  savePending: false,
-  saving: false,
-  lastSavedAt: "",
-  lastError: "",
+const app = {
+  supabase: null,
+  authSubscription: null,
+  loadingData: false,
 };
 
-let state = createSeedState();
+let state = {
+  team: {
+    id: appConfig.teamId,
+    name: appConfig.teamName,
+  },
+  auth: {
+    status: "loading",
+    view: "sign-in",
+    message: "",
+    profile: null,
+    session: null,
+  },
+  members: [],
+  events: [],
+  feed: [],
+  ui: loadUiState(),
+};
 
 boot();
 
 async function boot() {
-  renderLoadingState();
-  state = await initializeAppState();
-  render();
   wireEvents();
-}
 
-function renderLoadingState() {
-  refs.heroSubtitle.textContent = "Preparing the scheduler...";
-  refs.syncNotice.textContent = "Storage mode: loading";
-  refs.calendarSurface.innerHTML = `
-    <div class="empty-note">
-      <strong>Loading scheduler</strong>
-      <span class="helper-line">We are preparing the calendar and syncing the latest data.</span>
-    </div>
-  `;
-}
-
-async function initializeAppState() {
-  const localSnapshot = loadState();
-  syncState.mode = "local";
-
-  if (!isSupabaseConfigured()) {
-    return localSnapshot;
+  if (!hasSupabaseConfig()) {
+    state.auth.status = "setup";
+    state.auth.view = "setup";
+    state.auth.message = "Supabase credentials are missing. Add config.js values or GitHub Actions secrets.";
+    render();
+    return;
   }
 
-  try {
-    syncState.client = window.supabase.createClient(appConfig.supabaseUrl, appConfig.supabaseKey, {
-      auth: {
-        persistSession: false,
-        autoRefreshToken: false,
-      },
-    });
-    syncState.mode = "supabase";
-    const remoteRecord = await fetchCloudState();
-    if (remoteRecord?.state) {
-      syncState.lastSavedAt = remoteRecord.updated_at || "";
-      startCloudPolling();
-      return normalizeState({
-        ...remoteRecord.state,
-        ui: localSnapshot.ui,
-      });
-    }
+  app.supabase = window.supabase.createClient(appConfig.supabaseUrl, appConfig.supabaseKey, {
+    auth: {
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: true,
+    },
+  });
 
-    const seededState = normalizeState(localSnapshot);
-    const createdRecord = await writeCloudState(seededState);
-    syncState.lastSavedAt = createdRecord?.updated_at || new Date().toISOString();
-    startCloudPolling();
-    return seededState;
-  } catch (error) {
-    syncState.mode = "local";
-    syncState.lastError = `Cloud sync unavailable. ${extractErrorMessage(error)}`;
-    return localSnapshot;
+  const { data } = app.supabase.auth.onAuthStateChange((event, session) => {
+    void handleAuthStateChange(event, session);
+  });
+  app.authSubscription = data.subscription;
+
+  const { data: sessionData, error } = await app.supabase.auth.getSession();
+  if (error) {
+    state.auth.status = "signed_out";
+    state.auth.message = extractErrorMessage(error);
+    render();
+    return;
   }
+
+  if (sessionData.session) {
+    state.auth.session = sessionData.session;
+    await loadAuthedData(sessionData.session.user);
+    return;
+  }
+
+  state.auth.status = "signed_out";
+  state.auth.view = "sign-in";
+  render();
 }
 
 function wireEvents() {
   refs.createEventBtn.addEventListener("click", () => openModal());
-  refs.resetDemoBtn.addEventListener("click", handleResetDemo);
+  refs.seedDemoBtn.addEventListener("click", () => {
+    void handleSeedDemo();
+  });
+  refs.signOutBtn.addEventListener("click", () => {
+    void handleSignOut();
+  });
   refs.todayBtn.addEventListener("click", () => {
     state.ui.anchorDate = toDateKey(new Date());
-    render();
-    persist();
+    renderApp();
+    persistUi();
   });
   refs.showCancelledToggle.addEventListener("change", (event) => {
     state.ui.showCancelled = event.target.checked;
-    render();
-    persist();
+    renderApp();
+    persistUi();
   });
   refs.viewSwitch.addEventListener("click", (event) => {
     const button = event.target.closest("[data-view]");
@@ -143,39 +162,65 @@ function wireEvents() {
       return;
     }
     state.ui.view = button.dataset.view;
-    render();
-    persist();
+    renderApp();
+    persistUi();
   });
-  document.addEventListener("click", handleDocumentClick);
-  refs.eventForm.addEventListener("submit", handleEventFormSubmit);
-  refs.eventDrawer.addEventListener("click", handleDrawerClick);
-  refs.eventDrawer.addEventListener("change", handleDrawerChange);
+  refs.signInForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void handleSignIn();
+  });
+  refs.resetRequestForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void handlePasswordResetRequest();
+  });
+  refs.passwordUpdateForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void handlePasswordUpdate();
+  });
+  refs.eventForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void handleEventFormSubmit();
+  });
+  refs.eventDrawer.addEventListener("click", (event) => {
+    void handleDrawerClick(event);
+  });
+  refs.eventDrawer.addEventListener("change", (event) => {
+    void handleDrawerChange(event);
+  });
+  document.addEventListener("click", (event) => {
+    void handleDocumentClick(event);
+  });
 }
 
-function handleDocumentClick(event) {
+async function handleDocumentClick(event) {
+  const authButton = event.target.closest("[data-auth-view]");
+  if (authButton) {
+    setAuthView(authButton.dataset.authView);
+    return;
+  }
+
   const filterButton = event.target.closest("[data-filter-type]");
-  if (filterButton) {
+  if (filterButton && isSignedIn()) {
     toggleFilter(filterButton.dataset.filterType);
     return;
   }
 
   const navButton = event.target.closest("[data-nav]");
-  if (navButton) {
+  if (navButton && isSignedIn()) {
     shiftRange(navButton.dataset.nav);
     return;
   }
 
   const eventButton = event.target.closest("[data-select-event]");
-  if (eventButton) {
-    const eventId = eventButton.dataset.selectEvent;
-    state.ui.selectedEventId = eventId;
-    render();
-    persist();
+  if (eventButton && isSignedIn()) {
+    state.ui.selectedEventId = eventButton.dataset.selectEvent;
+    renderApp();
+    persistUi();
     return;
   }
 
   const openEditButton = event.target.closest("[data-edit-event]");
-  if (openEditButton) {
+  if (openEditButton && isSignedIn()) {
     openModal(openEditButton.dataset.editEvent);
     return;
   }
@@ -186,206 +231,345 @@ function handleDocumentClick(event) {
   }
 }
 
-function handleDrawerClick(event) {
-  const button = event.target.closest("button");
-  if (!button) {
+async function handleAuthStateChange(event, session) {
+  if (event === "PASSWORD_RECOVERY") {
+    state.auth.session = session;
+    state.auth.status = "password_recovery";
+    state.auth.view = "update-password";
+    state.auth.message = "Reset link confirmed. Enter a new password.";
+    render();
     return;
   }
 
-  const { action, eventId, memberId, response } = button.dataset;
-  if (action === "send-reminder" && eventId) {
-    sendReminder(eventId);
+  if (event === "SIGNED_OUT") {
+    clearAuthedState();
+    render();
     return;
   }
-  if (action === "cancel-event" && eventId) {
-    cancelEvent(eventId);
+
+  if (!session) {
+    clearAuthedState();
+    render();
     return;
   }
-  if (action === "postpone-event" && eventId) {
-    postponeEvent(eventId);
-    return;
-  }
-  if (action === "restore-event" && eventId) {
-    restoreEvent(eventId);
-    return;
-  }
-  if (action === "save-reschedule" && eventId) {
-    saveReschedule(eventId);
-    return;
-  }
-  if (action === "set-response" && eventId && memberId && response) {
-    updateAttendance(eventId, memberId, { response });
-  }
+
+  state.auth.session = session;
+  await loadAuthedData(session.user);
 }
 
-function handleDrawerChange(event) {
-  const target = event.target;
-  if (target.matches("[data-checkin-event]")) {
-    updateAttendance(target.dataset.checkinEvent, target.dataset.memberId, {
-      checkIn: target.value,
-    });
-  }
-}
-
-function handleResetDemo() {
-  if (!window.confirm("Reset the app back to the seeded demo schedule?")) {
+async function loadAuthedData(user) {
+  if (!app.supabase || !user) {
     return;
   }
-  state = createSeedState();
-  closeModal();
+
+  state.auth.status = "loading";
+  state.auth.message = "";
   render();
-  persist();
-}
 
-function toggleFilter(type) {
-  const nextFilters = state.ui.filterTypes.includes(type)
-    ? state.ui.filterTypes.filter((item) => item !== type)
-    : [...state.ui.filterTypes, type];
+  try {
+    app.loadingData = true;
 
-  state.ui.filterTypes = nextFilters.length ? nextFilters : Object.keys(TYPE_META);
-  state.ui.selectedEventId = ensureSelectedEventId();
-  render();
-  persist();
-}
-
-function shiftRange(direction) {
-  const anchor = parseDateKey(state.ui.anchorDate);
-  const multiplier = direction === "next" ? 1 : -1;
-  if (state.ui.view === "month") {
-    anchor.setMonth(anchor.getMonth() + multiplier);
-  } else if (state.ui.view === "week") {
-    anchor.setDate(anchor.getDate() + 7 * multiplier);
-  } else {
-    anchor.setDate(anchor.getDate() + 14 * multiplier);
-  }
-  state.ui.anchorDate = toDateKey(anchor);
-  render();
-  persist();
-}
-
-function handleEventFormSubmit(event) {
-  event.preventDefault();
-  const formData = new FormData(refs.eventForm);
-  const eventId = formData.get("eventId");
-  const start = formData.get("start");
-  const end = formData.get("end");
-
-  if (!start || !end || new Date(end) <= new Date(start)) {
-    window.alert("Please choose an end time after the start time.");
-    return;
-  }
-
-  const baseEvent = {
-    type: formData.get("type"),
-    title: compactString(formData.get("title")),
-    start,
-    end,
-    meetTime: formData.get("meetTime") || "",
-    opponent: compactString(formData.get("opponent")),
-    location: compactString(formData.get("location")),
-    address: compactString(formData.get("address")),
-    requiredPlayers: clampNumber(formData.get("requiredPlayers"), 1, 60, 8),
-    notes: compactString(formData.get("notes")),
-    updatedAt: new Date().toISOString(),
-  };
-
-  if (eventId) {
-    const existing = getEventById(eventId);
-    if (!existing) {
+    const profile = await fetchCurrentProfile(user.id);
+    if (!profile) {
+      state.auth.status = "signed_out";
+      state.auth.message =
+        "This login exists, but no team profile is linked yet. Create the profile in Supabase SQL, then sign in again.";
+      state.auth.profile = null;
+      state.auth.session = null;
+      render();
       return;
     }
-    const updated = {
-      ...existing,
-      ...baseEvent,
+
+    const team = await fetchTeam(profile.team_id);
+    const members = await fetchMembers(profile.team_id);
+    const eventRows = await fetchEvents(profile.team_id);
+    const availabilityRows = eventRows.length ? await fetchAvailabilityRows(eventRows.map((item) => item.id)) : [];
+
+    state.auth.profile = {
+      id: profile.id,
+      teamId: profile.team_id,
+      username: profile.username,
+      email: profile.email,
+      displayName: profile.display_name,
+      role: profile.role,
     };
-    replaceEvent(updated);
-    pushFeedItem({
-      eventId,
-      tone: "edit",
-      text: `${updated.title} was updated.`,
-    });
-    state.ui.selectedEventId = eventId;
-  } else {
-    const repeatWeekly = formData.get("repeatWeekly") === "on";
-    const repeatCount = repeatWeekly
-      ? clampNumber(formData.get("repeatCount"), 1, 20, 6)
-      : 1;
-    const recurringGroupId = repeatCount > 1 ? makeId("group") : "";
-    const createdEvents = [];
+    state.team = {
+      id: team?.id || profile.team_id,
+      name: team?.name || appConfig.teamName,
+    };
+    state.members = members.map(mapProfileToMember);
+    state.events = buildEventRecords(eventRows, availabilityRows, state.members);
+    state.feed = buildFeed(state.events, availabilityRows, state.members);
+    state.auth.status = "signed_in";
+    state.auth.view = "sign-in";
+    state.ui.selectedEventId = ensureSelectedEventId();
+    render();
+    persistUi();
+  } catch (error) {
+    state.auth.status = "signed_out";
+    state.auth.message = extractErrorMessage(error);
+    state.auth.profile = null;
+    state.auth.session = null;
+    render();
+  } finally {
+    app.loadingData = false;
+  }
+}
 
-    for (let index = 0; index < repeatCount; index += 1) {
-      const eventDateShift = index * 7;
-      const created = {
-        id: makeId("event"),
-        title: baseEvent.title,
-        type: baseEvent.type,
-        start: shiftDateTime(baseEvent.start, eventDateShift),
-        end: shiftDateTime(baseEvent.end, eventDateShift),
-        meetTime: baseEvent.meetTime ? shiftDateTime(baseEvent.meetTime, eventDateShift) : "",
-        opponent: baseEvent.opponent,
-        location: baseEvent.location,
-        address: baseEvent.address,
-        requiredPlayers: baseEvent.requiredPlayers,
-        notes: baseEvent.notes,
-        status: "scheduled",
-        recurringGroupId,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        attendance: buildAttendanceTemplate(),
-        originalStart: "",
-      };
-      createdEvents.push(created);
-    }
+async function fetchCurrentProfile(userId) {
+  const { data, error } = await app.supabase
+    .from(PROFILE_TABLE)
+    .select("id, team_id, username, email, display_name, role")
+    .eq("id", userId)
+    .maybeSingle();
 
-    state.events = [...state.events, ...createdEvents];
-    pushFeedItem({
-      eventId: createdEvents[0].id,
-      tone: "create",
-      text:
-        createdEvents.length > 1
-          ? `${createdEvents.length} weekly ${TYPE_META[baseEvent.type].label.toLowerCase()} events were scheduled.`
-          : `${baseEvent.title} was added to the calendar.`,
-    });
-    state.ui.selectedEventId = createdEvents[0].id;
+  if (error) {
+    throw error;
   }
 
-  state.events.sort(sortEvents);
-  closeModal();
+  return data;
+}
+
+async function fetchTeam(teamId) {
+  const { data, error } = await app.supabase
+    .from(TEAM_TABLE)
+    .select("id, name")
+    .eq("id", teamId)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  return data;
+}
+
+async function fetchMembers(teamId) {
+  const { data, error } = await app.supabase
+    .from(PROFILE_TABLE)
+    .select("id, team_id, username, email, display_name, role")
+    .eq("team_id", teamId)
+    .order("display_name", { ascending: true });
+
+  if (error) {
+    throw error;
+  }
+
+  return data || [];
+}
+
+async function fetchEvents(teamId) {
+  const { data, error } = await app.supabase
+    .from(EVENT_TABLE)
+    .select(
+      "id, team_id, type, title, start_at, end_at, meet_time, opponent, location, address, required_players, notes, status, recurring_group_id, created_at, updated_at",
+    )
+    .eq("team_id", teamId)
+    .order("start_at", { ascending: true, nullsFirst: false });
+
+  if (error) {
+    throw error;
+  }
+
+  return data || [];
+}
+
+async function fetchAvailabilityRows(eventIds) {
+  const { data, error } = await app.supabase
+    .from(AVAILABILITY_TABLE)
+    .select("event_id, user_id, response, check_in, updated_at")
+    .in("event_id", eventIds);
+
+  if (error) {
+    throw error;
+  }
+
+  return data || [];
+}
+
+async function refreshData() {
+  if (state.auth.session?.user) {
+    await loadAuthedData(state.auth.session.user);
+  }
+}
+
+async function handleSignIn() {
+  if (!app.supabase) {
+    return;
+  }
+
+  const formData = new FormData(refs.signInForm);
+  const loginIdentifier = compactString(formData.get("login"));
+  const password = compactString(formData.get("password"));
+
+  if (!loginIdentifier || !password) {
+    state.auth.message = "Enter your username or email and password.";
+    renderAuth();
+    return;
+  }
+
+  state.auth.message = "Signing you in...";
+  renderAuth();
+
+  try {
+    const email = await resolveLoginEmail(loginIdentifier);
+    const { error } = await app.supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+    if (error) {
+      throw error;
+    }
+  } catch (error) {
+    state.auth.message = extractErrorMessage(error);
+    renderAuth();
+  }
+}
+
+async function handlePasswordResetRequest() {
+  if (!app.supabase) {
+    return;
+  }
+
+  const formData = new FormData(refs.resetRequestForm);
+  const loginIdentifier = compactString(formData.get("login"));
+  if (!loginIdentifier) {
+    state.auth.message = "Enter the username or email for the account you want to reset.";
+    renderAuth();
+    return;
+  }
+
+  state.auth.message = "Sending a reset link...";
+  renderAuth();
+
+  try {
+    const email = await resolveLoginEmail(loginIdentifier);
+    const { error } = await app.supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: buildPasswordResetRedirect(),
+    });
+    if (error) {
+      throw error;
+    }
+    state.auth.message =
+      "Reset link sent. Check the account email inbox, then open the link and set a new password.";
+    renderAuth();
+  } catch (error) {
+    state.auth.message = extractErrorMessage(error);
+    renderAuth();
+  }
+}
+
+async function handlePasswordUpdate() {
+  if (!app.supabase) {
+    return;
+  }
+
+  const formData = new FormData(refs.passwordUpdateForm);
+  const password = compactString(formData.get("password"));
+  const confirmPassword = compactString(formData.get("confirmPassword"));
+
+  if (!password || password.length < 8) {
+    state.auth.message = "Use a password with at least 8 characters.";
+    renderAuth();
+    return;
+  }
+
+  if (password !== confirmPassword) {
+    state.auth.message = "The passwords do not match.";
+    renderAuth();
+    return;
+  }
+
+  state.auth.message = "Saving your new password...";
+  renderAuth();
+
+  const { error } = await app.supabase.auth.updateUser({ password });
+  if (error) {
+    state.auth.message = extractErrorMessage(error);
+    renderAuth();
+    return;
+  }
+
+  state.auth.message = "Password updated. Reloading your team workspace...";
+  if (state.auth.session?.user) {
+    await loadAuthedData(state.auth.session.user);
+    return;
+  }
+  state.auth.status = "signed_out";
+  state.auth.view = "sign-in";
   render();
-  persist();
 }
 
-function openModal(eventId = "") {
-  const eventRecord = eventId ? getEventById(eventId) : null;
-  refs.modalTitle.textContent = eventRecord ? "Edit event" : "Create event";
+async function handleSignOut() {
+  if (!app.supabase) {
+    return;
+  }
 
-  refs.eventForm.reset();
-  refs.eventForm.eventId.value = eventRecord?.id || "";
-  refs.eventForm.type.value = eventRecord?.type || "practice";
-  refs.eventForm.title.value = eventRecord?.title || "";
-  refs.eventForm.start.value = eventRecord?.start ? toInputValue(eventRecord.start) : "";
-  refs.eventForm.end.value = eventRecord?.end ? toInputValue(eventRecord.end) : "";
-  refs.eventForm.meetTime.value = eventRecord?.meetTime ? toInputValue(eventRecord.meetTime) : "";
-  refs.eventForm.opponent.value = eventRecord?.opponent || "";
-  refs.eventForm.location.value = eventRecord?.location || "";
-  refs.eventForm.address.value = eventRecord?.address || "";
-  refs.eventForm.requiredPlayers.value = eventRecord?.requiredPlayers || 8;
-  refs.eventForm.notes.value = eventRecord?.notes || "";
-  refs.eventForm.repeatWeekly.checked = false;
-  refs.eventForm.repeatCount.value = 6;
-
-  refs.eventModal.classList.remove("hidden");
-  refs.eventModal.setAttribute("aria-hidden", "false");
+  const { error } = await app.supabase.auth.signOut();
+  if (error) {
+    window.alert(extractErrorMessage(error));
+  }
 }
 
-function closeModal() {
-  refs.eventModal.classList.add("hidden");
-  refs.eventModal.setAttribute("aria-hidden", "true");
+async function resolveLoginEmail(identifier) {
+  const normalized = compactString(identifier).toLowerCase();
+  const { data, error } = await app.supabase.rpc("resolve_login_identifier", {
+    p_identifier: normalized,
+  });
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data) {
+    throw new Error("No account matches that username or email.");
+  }
+
+  return data;
+}
+
+function buildPasswordResetRedirect() {
+  return window.location.origin + window.location.pathname;
 }
 
 function render() {
+  renderAuth();
+  renderApp();
+}
+
+function renderAuth() {
+  const shouldShowAuth =
+    state.auth.status === "signed_out" ||
+    state.auth.status === "password_recovery" ||
+    state.auth.status === "setup" ||
+    (state.auth.status === "loading" && !state.auth.profile);
+  refs.authScreen.classList.toggle("hidden", !shouldShowAuth);
+  refs.appShell.classList.toggle("hidden", shouldShowAuth && !isSignedIn());
+  refs.authMessage.textContent = state.auth.message || "";
+  refs.setupHelp.classList.toggle("hidden", state.auth.status !== "setup");
+
+  const activeView = state.auth.status === "setup" ? "setup" : state.auth.view;
+  [...refs.authTabs.querySelectorAll("button")].forEach((button) => {
+    button.classList.toggle("active", button.dataset.authView === activeView);
+    button.disabled = state.auth.status === "loading" || state.auth.status === "setup";
+  });
+
+  refs.signInForm.classList.toggle("hidden", activeView !== "sign-in");
+  refs.resetRequestForm.classList.toggle("hidden", activeView !== "reset");
+  refs.passwordUpdateForm.classList.toggle("hidden", activeView !== "update-password");
+}
+
+function renderApp() {
+  if (!isSignedIn()) {
+    return;
+  }
+
   state.ui.selectedEventId = ensureSelectedEventId();
   refs.showCancelledToggle.checked = state.ui.showCancelled;
+  refs.createEventBtn.classList.toggle("hidden", !isManager());
+  refs.seedDemoBtn.classList.toggle("hidden", !isManager());
+  refs.sessionBadge.textContent = `${state.auth.profile.displayName} | ${capitalize(state.auth.profile.role)}`;
+
   renderFilters();
   renderHeader();
   renderFeed();
@@ -395,6 +579,38 @@ function render() {
   renderRosterBoard();
   renderDrawer();
   syncActiveView();
+}
+
+function renderHeader() {
+  const nextEvent = getNextUpcomingEvent();
+  const selectedEvent = getSelectedEvent();
+  const focusEvent = selectedEvent || nextEvent;
+  const responseSummary = focusEvent ? getResponseSummary(focusEvent) : null;
+  const currentAvailability = focusEvent ? getCurrentUserAttendance(focusEvent) : null;
+
+  refs.heroTitle.textContent = `${escapeText(state.team.name)} Calendar`;
+  refs.heroSubtitle.textContent = isManager()
+    ? "Manager access: create events, view full team availability, and keep the schedule moving."
+    : "Player access: review upcoming events and submit only your own availability.";
+  refs.syncNotice.textContent = isManager()
+    ? `Signed in as manager @${state.auth.profile.username}. Password resets are handled by email links.`
+    : `Signed in as player @${state.auth.profile.username}. You can update only your own availability.`;
+  refs.nextEventLabel.textContent = nextEvent
+    ? `${formatShortDate(nextEvent.start)} at ${formatTime(nextEvent.start)}`
+    : "No upcoming event";
+
+  if (isManager()) {
+    refs.availabilityLabel.textContent = responseSummary
+      ? `${responseSummary.available}/${focusEvent.requiredPlayers} ready`
+      : "-";
+    refs.pendingLabel.textContent = responseSummary ? `${responseSummary.pending} waiting` : "-";
+    return;
+  }
+
+  refs.availabilityLabel.textContent = currentAvailability
+    ? RESPONSE_META[currentAvailability.response]
+    : "No reply";
+  refs.pendingLabel.textContent = capitalize(state.auth.profile.role);
 }
 
 function renderFilters() {
@@ -412,29 +628,6 @@ function renderFilters() {
     .join("");
 }
 
-function renderHeader() {
-  const nextEvent = getNextUpcomingEvent();
-  const selectedEvent = getSelectedEvent();
-  const focusEvent = selectedEvent || nextEvent;
-  const responseSummary = focusEvent ? getResponseSummary(focusEvent) : null;
-  const pendingCount = getVisibleEvents().reduce((sum, item) => {
-    return sum + Object.values(item.attendance).filter((entry) => entry.response === "pending").length;
-  }, 0);
-
-  refs.heroTitle.textContent = `${escapeText(state.team.name)} Calendar`;
-  refs.heroSubtitle.textContent = nextEvent
-    ? `${TYPE_META[nextEvent.type].label} planning with live RSVPs, recurring sessions, and last-minute rescheduling.`
-    : "Create your first event to start mapping the season.";
-  refs.syncNotice.textContent = describeSyncStatus();
-  refs.nextEventLabel.textContent = nextEvent
-    ? `${formatShortDate(nextEvent.start)} at ${formatTime(nextEvent.start)}`
-    : "No upcoming event";
-  refs.availabilityLabel.textContent = responseSummary
-    ? `${responseSummary.available}/${focusEvent.requiredPlayers} ready`
-    : "-";
-  refs.pendingLabel.textContent = `${pendingCount} waiting`;
-}
-
 function renderFeed() {
   refs.feedList.innerHTML = state.feed.length
     ? state.feed
@@ -448,7 +641,7 @@ function renderFeed() {
           `;
         })
         .join("")
-    : `<div class="empty-note"><p class="helper-line">Updates you trigger in the app will show up here.</p></div>`;
+    : `<div class="empty-note"><p class="helper-line">Recent updates will appear here as people reply and managers adjust events.</p></div>`;
 }
 
 function renderMiniTimeline() {
@@ -457,10 +650,7 @@ function renderMiniTimeline() {
   refs.miniTimeline.innerHTML = nextTenDays
     .map((date) => {
       const dayEvents = getVisibleEvents().filter((eventRecord) => {
-        if (!eventRecord.start) {
-          return false;
-        }
-        return isSameDay(new Date(eventRecord.start), date);
+        return eventRecord.start && isSameDay(new Date(eventRecord.start), date);
       });
       const label = `${DAY_NAMES[date.getDay()]} ${date.getDate()}`;
       if (!dayEvents.length) {
@@ -514,10 +704,7 @@ function renderMonthView() {
 
 function renderMonthCell(date, anchor) {
   const events = getVisibleEvents().filter((eventRecord) => {
-    if (!eventRecord.start) {
-      return false;
-    }
-    return isSameDay(new Date(eventRecord.start), date);
+    return eventRecord.start && isSameDay(new Date(eventRecord.start), date);
   });
   const outside = date.getMonth() !== anchor.getMonth();
   const today = isSameDay(date, new Date());
@@ -552,10 +739,7 @@ function renderWeekView() {
 
 function renderWeekDay(date) {
   const dayEvents = getVisibleEvents().filter((eventRecord) => {
-    if (!eventRecord.start) {
-      return false;
-    }
-    return isSameDay(new Date(eventRecord.start), date);
+    return eventRecord.start && isSameDay(new Date(eventRecord.start), date);
   });
   return `
     <section class="week-day ${isSameDay(date, new Date()) ? "today" : ""}">
@@ -577,17 +761,16 @@ function renderWeekDay(date) {
 function renderAgendaView() {
   const anchor = parseDateKey(state.ui.anchorDate);
   const days = Array.from({ length: 14 }, (_, index) => addDays(startOfDay(anchor), index));
-  const postponed = getVisibleEvents().filter((eventRecord) => !eventRecord.start && eventRecord.status === "postponed");
+  const postponed = getVisibleEvents().filter((eventRecord) => {
+    return !eventRecord.start && eventRecord.status === "postponed";
+  });
 
   return `
     <div class="agenda-view">
       ${days
         .map((date) => {
           const events = getVisibleEvents().filter((eventRecord) => {
-            if (!eventRecord.start) {
-              return false;
-            }
-            return isSameDay(new Date(eventRecord.start), date);
+            return eventRecord.start && isSameDay(new Date(eventRecord.start), date);
           });
           return `
             <section class="agenda-day ${isSameDay(date, new Date()) ? "today" : ""}">
@@ -644,7 +827,26 @@ function renderAgendaPreview() {
 function renderRosterBoard() {
   const focusEvent = getSelectedEvent() || getNextUpcomingEvent();
   if (!focusEvent) {
-    refs.rosterBoard.innerHTML = `<div class="empty-note"><span>Availability will appear once an event exists.</span></div>`;
+    refs.rosterBoard.innerHTML = `<div class="empty-note"><span>Availability will appear once a manager creates an event.</span></div>`;
+    return;
+  }
+
+  if (!isManager()) {
+    const currentAttendance = getCurrentUserAttendance(focusEvent);
+    refs.rosterBoard.innerHTML = `
+      <div class="member-card">
+        <strong>${escapeHtml(focusEvent.title)}</strong>
+        <span>${escapeHtml(formatEventWindow(focusEvent))}</span>
+      </div>
+      <div class="member-card">
+        <strong>Your reply</strong>
+        <span>${escapeHtml(RESPONSE_META[currentAttendance.response])}</span>
+      </div>
+      <div class="member-card">
+        <strong>Username</strong>
+        <span>@${escapeHtml(state.auth.profile.username)}</span>
+      </div>
+    `;
     return;
   }
 
@@ -668,7 +870,7 @@ function renderRosterBoard() {
         return `
           <button class="member-card" data-select-event="${focusEvent.id}">
             <strong>${escapeHtml(member.name)}</strong>
-            <span>${RESPONSE_META[attendance.response]} | ${CHECKIN_META[attendance.checkIn]}</span>
+            <span>${escapeHtml(RESPONSE_META[attendance.response])} | ${escapeHtml(CHECKIN_META[attendance.checkIn])}</span>
           </button>
         `;
       })
@@ -684,7 +886,7 @@ function renderDrawer() {
       <div class="empty-state">
         <p class="eyebrow">Event details</p>
         <h2>Pick an event</h2>
-        <p class="muted">Create or select an event to track availability and manage last-minute changes.</p>
+        <p class="muted">Create or select an event to track availability and manage the team schedule.</p>
       </div>
     `;
     return;
@@ -694,6 +896,7 @@ function renderDrawer() {
   const summary = getResponseSummary(eventRecord);
   const rescheduleStartValue = eventRecord.start ? toInputValue(eventRecord.start) : "";
   const rescheduleEndValue = eventRecord.end ? toInputValue(eventRecord.end) : "";
+
   refs.eventDrawer.innerHTML = `
     <div class="drawer-head">
       <p class="eyebrow">${escapeHtml(TYPE_META[eventRecord.type].label)}</p>
@@ -714,28 +917,40 @@ function renderDrawer() {
       <p class="helper-line">${escapeHtml(formatEventWindow(eventRecord))}</p>
     </div>
 
-    <div class="drawer-actions">
-      <button class="primary-btn" data-edit-event="${eventRecord.id}">Edit event</button>
-      <button class="ghost-btn" data-action="send-reminder" data-event-id="${eventRecord.id}">Send reminder</button>
-      ${
-        eventRecord.status === "cancelled"
-          ? `<button class="ghost-btn" data-action="restore-event" data-event-id="${eventRecord.id}">Restore event</button>`
-          : `<button class="ghost-btn" data-action="cancel-event" data-event-id="${eventRecord.id}">Cancel</button>`
-      }
-      ${
-        eventRecord.status === "postponed"
-          ? ""
-          : `<button class="ghost-btn" data-action="postpone-event" data-event-id="${eventRecord.id}">Postpone</button>`
-      }
-    </div>
+    ${
+      isManager()
+        ? `
+      <div class="drawer-actions">
+        <button class="primary-btn" data-edit-event="${eventRecord.id}">Edit event</button>
+        <button class="ghost-btn" data-action="copy-reminder" data-event-id="${eventRecord.id}">Copy reminder</button>
+        ${
+          eventRecord.status === "cancelled"
+            ? `<button class="ghost-btn" data-action="restore-event" data-event-id="${eventRecord.id}">Restore event</button>`
+            : `<button class="ghost-btn" data-action="cancel-event" data-event-id="${eventRecord.id}">Cancel</button>`
+        }
+        ${
+          eventRecord.status === "postponed"
+            ? ""
+            : `<button class="ghost-btn" data-action="postpone-event" data-event-id="${eventRecord.id}">Postpone</button>`
+        }
+      </div>
+    `
+        : ""
+    }
 
     <div class="drawer-block">
       <h3>Event snapshot</h3>
       <div class="summary-metrics">
-        <span class="summary-chip">${summary.available} available</span>
-        <span class="summary-chip">${summary.pending} pending replies</span>
-        <span class="summary-chip">${summary.maybe} maybe</span>
-        <span class="summary-chip">${summary.unavailable} unavailable</span>
+        ${
+          isManager()
+            ? `
+          <span class="summary-chip">${summary.available} available</span>
+          <span class="summary-chip">${summary.pending} pending replies</span>
+          <span class="summary-chip">${summary.maybe} maybe</span>
+          <span class="summary-chip">${summary.unavailable} unavailable</span>
+        `
+            : `<span class="summary-chip">Your reply: ${escapeHtml(RESPONSE_META[getCurrentUserAttendance(eventRecord).response])}</span>`
+        }
       </div>
       ${
         eventRecord.location || eventRecord.address || eventRecord.meetTime
@@ -767,38 +982,53 @@ function renderDrawer() {
       }
     </div>
 
-    <div class="drawer-block">
-      <h3>Reschedule quickly</h3>
-      <form class="reschedule-form" onsubmit="return false;">
-        <div class="reschedule-grid">
-          <label>
-            <span>New start</span>
-            <input id="rescheduleStart" type="datetime-local" value="${escapeAttribute(rescheduleStartValue)}" />
-          </label>
-          <label>
-            <span>New end</span>
-            <input id="rescheduleEnd" type="datetime-local" value="${escapeAttribute(rescheduleEndValue)}" />
-          </label>
-        </div>
-        <div class="drawer-actions">
-          <button class="ghost-btn" data-action="save-reschedule" data-event-id="${eventRecord.id}">Save new schedule</button>
-        </div>
-      </form>
-    </div>
+    ${
+      isManager()
+        ? `
+      <div class="drawer-block">
+        <h3>Reschedule quickly</h3>
+        <form class="reschedule-form" onsubmit="return false;">
+          <div class="reschedule-grid">
+            <label>
+              <span>New start</span>
+              <input id="rescheduleStart" type="datetime-local" value="${escapeAttribute(rescheduleStartValue)}" />
+            </label>
+            <label>
+              <span>New end</span>
+              <input id="rescheduleEnd" type="datetime-local" value="${escapeAttribute(rescheduleEndValue)}" />
+            </label>
+          </div>
+          <div class="drawer-actions">
+            <button class="ghost-btn" data-action="save-reschedule" data-event-id="${eventRecord.id}">Save new schedule</button>
+          </div>
+        </form>
+      </div>
+    `
+        : ""
+    }
 
     <div class="drawer-block">
-      <h3>Attendance tracking</h3>
+      <h3>${isManager() ? "Availability tracking" : "Submit your availability"}</h3>
       <div class="attendance-summary">
         <span class="type-chip">Required players: ${eventRecord.requiredPlayers}</span>
         ${
-          summary.available >= eventRecord.requiredPlayers
-            ? `<span class="type-chip">Squad ready</span>`
-            : `<span class="type-chip">${eventRecord.requiredPlayers - summary.available} more needed</span>`
+          isManager()
+            ? summary.available >= eventRecord.requiredPlayers
+              ? `<span class="type-chip">Squad ready</span>`
+              : `<span class="type-chip">${eventRecord.requiredPlayers - summary.available} more needed</span>`
+            : `<span class="type-chip">Only your response is editable</span>`
         }
       </div>
-      ${state.members.map((member) => renderMemberRow(eventRecord, member)).join("")}
+      ${getVisibleMembersForDrawer().map((member) => renderMemberRow(eventRecord, member)).join("")}
     </div>
   `;
+}
+
+function getVisibleMembersForDrawer() {
+  if (isManager()) {
+    return state.members;
+  }
+  return state.members.filter((member) => member.id === state.auth.profile.id);
 }
 
 function renderMemberRow(eventRecord, member) {
@@ -836,14 +1066,20 @@ function renderMemberRow(eventRecord, member) {
             })
             .join("")}
         </div>
-        <select class="status-select" data-checkin-event="${eventRecord.id}" data-member-id="${member.id}">
-          ${Object.entries(CHECKIN_META)
-            .map(([value, label]) => {
-              const selected = attendance.checkIn === value ? "selected" : "";
-              return `<option value="${value}" ${selected}>${escapeHtml(label)}</option>`;
-            })
-            .join("")}
-        </select>
+        ${
+          isManager()
+            ? `
+          <select class="status-select" data-checkin-event="${eventRecord.id}" data-member-id="${member.id}">
+            ${Object.entries(CHECKIN_META)
+              .map(([value, label]) => {
+                const selected = attendance.checkIn === value ? "selected" : "";
+                return `<option value="${value}" ${selected}>${escapeHtml(label)}</option>`;
+              })
+              .join("")}
+          </select>
+        `
+            : ""
+        }
       </div>
     </div>
   `;
@@ -955,139 +1191,8 @@ function ensureSelectedEventId() {
   return nextEvent ? nextEvent.id : visibleEvents[0]?.id || state.events[0]?.id || "";
 }
 
-function replaceEvent(nextEvent) {
-  state.events = state.events.map((eventRecord) => {
-    return eventRecord.id === nextEvent.id ? nextEvent : eventRecord;
-  });
-}
-
-function updateAttendance(eventId, memberId, patch) {
-  const eventRecord = getEventById(eventId);
-  if (!eventRecord) {
-    return;
-  }
-  const currentAttendance = eventRecord.attendance[memberId] || {
-    response: "pending",
-    checkIn: "pending",
-  };
-  eventRecord.attendance[memberId] = {
-    ...currentAttendance,
-    ...patch,
-  };
-  eventRecord.updatedAt = new Date().toISOString();
-  state.ui.selectedEventId = eventId;
-  render();
-  persist();
-}
-
-function sendReminder(eventId) {
-  const eventRecord = getEventById(eventId);
-  if (!eventRecord) {
-    return;
-  }
-  const summary = getResponseSummary(eventRecord);
-  pushFeedItem({
-    eventId,
-    tone: "reminder",
-    text: `Reminder sent for ${eventRecord.title}. ${summary.pending} replies were still pending.`,
-  });
-  render();
-  persist();
-}
-
-function cancelEvent(eventId) {
-  const eventRecord = getEventById(eventId);
-  if (!eventRecord) {
-    return;
-  }
-  eventRecord.status = "cancelled";
-  eventRecord.updatedAt = new Date().toISOString();
-  pushFeedItem({
-    eventId,
-    tone: "cancel",
-    text: `${eventRecord.title} was cancelled and everyone was notified.`,
-  });
-  render();
-  persist();
-}
-
-function restoreEvent(eventId) {
-  const eventRecord = getEventById(eventId);
-  if (!eventRecord) {
-    return;
-  }
-  eventRecord.status = "scheduled";
-  eventRecord.updatedAt = new Date().toISOString();
-  pushFeedItem({
-    eventId,
-    tone: "restore",
-    text: `${eventRecord.title} is back on the calendar.`,
-  });
-  render();
-  persist();
-}
-
-function postponeEvent(eventId) {
-  const eventRecord = getEventById(eventId);
-  if (!eventRecord) {
-    return;
-  }
-  eventRecord.originalStart = eventRecord.originalStart || eventRecord.start;
-  eventRecord.status = "postponed";
-  eventRecord.start = "";
-  eventRecord.end = "";
-  eventRecord.meetTime = "";
-  eventRecord.updatedAt = new Date().toISOString();
-  pushFeedItem({
-    eventId,
-    tone: "postpone",
-    text: `${eventRecord.title} was postponed without a confirmed new date.`,
-  });
-  render();
-  persist();
-}
-
-function saveReschedule(eventId) {
-  const eventRecord = getEventById(eventId);
-  if (!eventRecord) {
-    return;
-  }
-  const startInput = document.querySelector("#rescheduleStart");
-  const endInput = document.querySelector("#rescheduleEnd");
-  const startValue = startInput?.value || "";
-  const endValue = endInput?.value || "";
-  if (!startValue || !endValue || new Date(endValue) <= new Date(startValue)) {
-    window.alert("Please choose a valid new start and end time.");
-    return;
-  }
-
-  eventRecord.originalStart = eventRecord.originalStart || eventRecord.start;
-  const oldStart = eventRecord.start ? new Date(eventRecord.start) : null;
-  const newStart = new Date(startValue);
-  eventRecord.start = startValue;
-  eventRecord.end = endValue;
-  eventRecord.status = "scheduled";
-  eventRecord.updatedAt = new Date().toISOString();
-
-  if (eventRecord.meetTime) {
-    const oldMeet = new Date(eventRecord.meetTime);
-    const diff = oldStart ? oldStart.getTime() - oldMeet.getTime() : 30 * 60 * 1000;
-    const shiftedMeet = new Date(newStart.getTime() - Math.abs(diff));
-    eventRecord.meetTime = toInputValue(shiftedMeet);
-  }
-
-  pushFeedItem({
-    eventId,
-    tone: "reschedule",
-    text: `${eventRecord.title} was rescheduled to ${formatShortDate(startValue)}.`,
-  });
-  render();
-  persist();
-}
-
 function getResponseSummary(eventRecord) {
-  const values = Object.values(eventRecord.attendance || {});
-  return values.reduce(
+  return Object.values(eventRecord.attendance || {}).reduce(
     (summary, attendance) => {
       summary[attendance.response] += 1;
       return summary;
@@ -1101,267 +1206,317 @@ function getResponseSummary(eventRecord) {
   );
 }
 
-function buildAttendanceTemplate() {
-  return state.members.reduce((accumulator, member) => {
-    accumulator[member.id] = {
+function getCurrentUserAttendance(eventRecord) {
+  return (
+    eventRecord.attendance[state.auth.profile.id] || {
       response: "pending",
       checkIn: "pending",
-    };
-    return accumulator;
-  }, {});
-}
-
-function normalizeConfig(rawConfig) {
-  return {
-    ...DEFAULT_CONFIG,
-    ...(rawConfig || {}),
-  };
-}
-
-function isSupabaseConfigured() {
-  return Boolean(
-    appConfig.storageMode === "supabase" &&
-      appConfig.supabaseUrl &&
-      appConfig.supabaseKey &&
-      appConfig.supabaseBoardId &&
-      window.supabase?.createClient,
+    }
   );
 }
 
-async function fetchCloudState() {
-  const { data, error } = await syncState.client
-    .from(CLOUD_TABLE)
-    .select("id, state, updated_at")
-    .eq("id", appConfig.supabaseBoardId)
-    .maybeSingle();
+function toggleFilter(type) {
+  const nextFilters = state.ui.filterTypes.includes(type)
+    ? state.ui.filterTypes.filter((item) => item !== type)
+    : [...state.ui.filterTypes, type];
 
-  if (error) {
-    throw error;
-  }
-
-  return data;
+  state.ui.filterTypes = nextFilters.length ? nextFilters : Object.keys(TYPE_META);
+  state.ui.selectedEventId = ensureSelectedEventId();
+  renderApp();
+  persistUi();
 }
 
-async function writeCloudState(nextState) {
-  const { data, error } = await syncState.client
-    .from(CLOUD_TABLE)
-    .upsert(
-      {
-        id: appConfig.supabaseBoardId,
-        state: serializeCloudState(nextState),
-      },
-      {
-        onConflict: "id",
-      },
-    )
-    .select("id, updated_at, state")
-    .single();
-
-  if (error) {
-    throw error;
+function shiftRange(direction) {
+  const anchor = parseDateKey(state.ui.anchorDate);
+  const multiplier = direction === "next" ? 1 : -1;
+  if (state.ui.view === "month") {
+    anchor.setMonth(anchor.getMonth() + multiplier);
+  } else if (state.ui.view === "week") {
+    anchor.setDate(anchor.getDate() + 7 * multiplier);
+  } else {
+    anchor.setDate(anchor.getDate() + 14 * multiplier);
   }
-
-  return data;
+  state.ui.anchorDate = toDateKey(anchor);
+  renderApp();
+  persistUi();
 }
 
-function serializeCloudState(nextState) {
-  return {
-    team: nextState.team,
-    members: nextState.members,
-    events: nextState.events,
-    feed: nextState.feed,
+function openModal(eventId = "") {
+  if (!isManager()) {
+    return;
+  }
+
+  const eventRecord = eventId ? getEventById(eventId) : null;
+  refs.modalTitle.textContent = eventRecord ? "Edit event" : "Create event";
+
+  refs.eventForm.reset();
+  refs.eventForm.eventId.value = eventRecord?.id || "";
+  refs.eventForm.type.value = eventRecord?.type || "practice";
+  refs.eventForm.title.value = eventRecord?.title || "";
+  refs.eventForm.start.value = eventRecord?.start ? toInputValue(eventRecord.start) : "";
+  refs.eventForm.end.value = eventRecord?.end ? toInputValue(eventRecord.end) : "";
+  refs.eventForm.meetTime.value = eventRecord?.meetTime ? toInputValue(eventRecord.meetTime) : "";
+  refs.eventForm.opponent.value = eventRecord?.opponent || "";
+  refs.eventForm.location.value = eventRecord?.location || "";
+  refs.eventForm.address.value = eventRecord?.address || "";
+  refs.eventForm.requiredPlayers.value = eventRecord?.requiredPlayers || 8;
+  refs.eventForm.notes.value = eventRecord?.notes || "";
+  refs.eventForm.repeatWeekly.checked = false;
+  refs.eventForm.repeatCount.value = 6;
+
+  refs.eventModal.classList.remove("hidden");
+  refs.eventModal.setAttribute("aria-hidden", "false");
+}
+
+function closeModal() {
+  refs.eventModal.classList.add("hidden");
+  refs.eventModal.setAttribute("aria-hidden", "true");
+}
+
+async function handleEventFormSubmit() {
+  if (!isManager()) {
+    return;
+  }
+
+  const formData = new FormData(refs.eventForm);
+  const eventId = formData.get("eventId");
+  const start = formData.get("start");
+  const end = formData.get("end");
+
+  if (!start || !end || new Date(end) <= new Date(start)) {
+    window.alert("Please choose an end time after the start time.");
+    return;
+  }
+
+  const baseEvent = {
+    team_id: state.auth.profile.teamId,
+    type: formData.get("type"),
+    title: compactString(formData.get("title")),
+    start_at: toIsoString(start),
+    end_at: toIsoString(end),
+    meet_time: formData.get("meetTime") ? toIsoString(formData.get("meetTime")) : null,
+    opponent: compactString(formData.get("opponent")) || null,
+    location: compactString(formData.get("location")) || null,
+    address: compactString(formData.get("address")) || null,
+    required_players: clampNumber(formData.get("requiredPlayers"), 1, 60, 8),
+    notes: compactString(formData.get("notes")) || null,
+    created_by: state.auth.profile.id,
   };
-}
-
-function persistSnapshot() {
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-}
-
-function queueCloudSave() {
-  syncState.savePending = true;
-  if (syncState.saveTimer) {
-    window.clearTimeout(syncState.saveTimer);
-  }
-  syncState.saveTimer = window.setTimeout(() => {
-    syncState.saveTimer = 0;
-    void flushCloudSave();
-  }, 500);
-  renderHeader();
-}
-
-async function flushCloudSave() {
-  if (syncState.mode !== "supabase" || !syncState.client) {
-    return;
-  }
-
-  if (syncState.saving) {
-    syncState.savePending = true;
-    return;
-  }
-
-  syncState.saving = true;
-  syncState.savePending = false;
-  syncState.lastError = "";
-  renderHeader();
 
   try {
-    const savedRecord = await writeCloudState(state);
-    syncState.lastSavedAt = savedRecord?.updated_at || new Date().toISOString();
+    if (eventId) {
+      const { error } = await app.supabase
+        .from(EVENT_TABLE)
+        .update(baseEvent)
+        .eq("id", eventId);
+      if (error) {
+        throw error;
+      }
+    } else {
+      const repeatWeekly = formData.get("repeatWeekly") === "on";
+      const repeatCount = repeatWeekly ? clampNumber(formData.get("repeatCount"), 1, 20, 6) : 1;
+      const recurringGroupId = repeatCount > 1 ? makeId("group") : null;
+      const rows = Array.from({ length: repeatCount }, (_, index) => {
+        const eventDateShift = index * 7;
+        return {
+          ...baseEvent,
+          recurring_group_id: recurringGroupId,
+          start_at: shiftIsoByDays(baseEvent.start_at, eventDateShift),
+          end_at: shiftIsoByDays(baseEvent.end_at, eventDateShift),
+          meet_time: baseEvent.meet_time ? shiftIsoByDays(baseEvent.meet_time, eventDateShift) : null,
+          status: "scheduled",
+        };
+      });
+      const { error } = await app.supabase.from(EVENT_TABLE).insert(rows);
+      if (error) {
+        throw error;
+      }
+    }
+
+    closeModal();
+    await refreshData();
   } catch (error) {
-    syncState.lastError = `Cloud save failed. ${extractErrorMessage(error)}`;
-  } finally {
-    syncState.saving = false;
-    renderHeader();
-    if (syncState.savePending) {
-      queueCloudSave();
-    }
+    window.alert(extractErrorMessage(error));
   }
 }
 
-function startCloudPolling() {
-  if (syncState.pollingTimer) {
-    window.clearInterval(syncState.pollingTimer);
-  }
-
-  syncState.pollingTimer = window.setInterval(() => {
-    void pollCloudState();
-  }, 20000);
-}
-
-async function pollCloudState() {
-  if (
-    syncState.mode !== "supabase" ||
-    !syncState.client ||
-    syncState.saving ||
-    syncState.savePending ||
-    document.hidden
-  ) {
+async function handleDrawerClick(event) {
+  const button = event.target.closest("button");
+  if (!button) {
     return;
   }
 
-  try {
-    const remoteRecord = await fetchCloudState();
-    if (!remoteRecord?.state || remoteRecord.updated_at === syncState.lastSavedAt) {
-      return;
-    }
+  const { action, eventId, memberId, response } = button.dataset;
+  if (!action || !eventId) {
+    return;
+  }
 
-    syncState.lastSavedAt = remoteRecord.updated_at || "";
-    state = normalizeState({
-      ...remoteRecord.state,
-      ui: state.ui,
+  if (action === "copy-reminder") {
+    await copyReminder(eventId);
+    return;
+  }
+  if (action === "cancel-event") {
+    await updateEventStatus(eventId, { status: "cancelled" });
+    return;
+  }
+  if (action === "restore-event") {
+    await updateEventStatus(eventId, { status: "scheduled" });
+    return;
+  }
+  if (action === "postpone-event") {
+    await updateEventStatus(eventId, {
+      status: "postponed",
+      start_at: null,
+      end_at: null,
+      meet_time: null,
     });
-    persistSnapshot();
-    render();
-  } catch (error) {
-    syncState.lastError = `Cloud refresh failed. ${extractErrorMessage(error)}`;
-    renderHeader();
+    return;
+  }
+  if (action === "save-reschedule") {
+    await saveReschedule(eventId);
+    return;
+  }
+  if (action === "set-response" && memberId && response) {
+    await updateAvailability(eventId, memberId, { response });
   }
 }
 
-function describeSyncStatus() {
-  if (syncState.mode === "supabase") {
-    if (syncState.lastError) {
-      return syncState.lastError;
-    }
-    if (syncState.saving || syncState.savePending) {
-      return "Cloud sync: saving your latest changes";
-    }
-    if (syncState.lastSavedAt) {
-      return `Cloud sync: live via Supabase, last sync ${formatRelativeTime(syncState.lastSavedAt)}`;
-    }
-    return "Cloud sync: connected to Supabase";
+async function handleDrawerChange(event) {
+  const target = event.target;
+  if (target.matches("[data-checkin-event]")) {
+    await updateAvailability(target.dataset.checkinEvent, target.dataset.memberId, {
+      check_in: target.value,
+    });
   }
-
-  if (syncState.lastError) {
-    return `${syncState.lastError} Using browser storage only.`;
-  }
-
-  return "Storage mode: local browser only";
 }
 
-function extractErrorMessage(error) {
-  if (!error) {
-    return "Unknown error.";
+async function copyReminder(eventId) {
+  const eventRecord = getEventById(eventId);
+  if (!eventRecord) {
+    return;
   }
-  if (typeof error === "string") {
-    return error;
-  }
-  if (typeof error.message === "string" && error.message.trim()) {
-    return error.message.trim();
-  }
-  return "Unknown error.";
-}
 
-function loadState() {
+  const reminder = `${eventRecord.title} - ${formatEventWindow(eventRecord)}${eventRecord.location ? ` - ${eventRecord.location}` : ""}`;
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) {
-      return createSeedState();
-    }
-    const parsed = JSON.parse(raw);
-    return normalizeState(parsed);
+    await navigator.clipboard.writeText(reminder);
+    window.alert("Reminder copied to your clipboard.");
   } catch (error) {
-    return createSeedState();
+    window.alert(reminder);
   }
 }
 
-function normalizeState(inputState) {
-  const fallback = createSeedState();
-  const members = Array.isArray(inputState.members) && inputState.members.length ? inputState.members : fallback.members;
-  const events = Array.isArray(inputState.events) && inputState.events.length ? inputState.events : fallback.events;
-  const feed = Array.isArray(inputState.feed) ? inputState.feed : fallback.feed;
-  const ui = {
-    view: ["month", "week", "agenda"].includes(inputState.ui?.view) ? inputState.ui.view : "month",
-    anchorDate: inputState.ui?.anchorDate || fallback.ui.anchorDate,
-    filterTypes: Array.isArray(inputState.ui?.filterTypes) && inputState.ui.filterTypes.length
-      ? inputState.ui.filterTypes.filter((type) => TYPE_META[type])
-      : Object.keys(TYPE_META),
-    selectedEventId: inputState.ui?.selectedEventId || "",
-    showCancelled: Boolean(inputState.ui?.showCancelled),
-  };
-  const normalized = {
-    team: inputState.team || fallback.team,
-    members,
-    events,
-    feed,
-    ui,
-  };
-  normalized.ui.selectedEventId = normalized.ui.selectedEventId || findDefaultSelectedEventId(events);
-  return normalized;
+async function updateEventStatus(eventId, patch) {
+  if (!isManager()) {
+    return;
+  }
+
+  const { error } = await app.supabase
+    .from(EVENT_TABLE)
+    .update(patch)
+    .eq("id", eventId);
+
+  if (error) {
+    window.alert(extractErrorMessage(error));
+    return;
+  }
+
+  await refreshData();
 }
 
-function findDefaultSelectedEventId(events) {
-  const nextEvent = [...events].sort(sortEvents).find((eventRecord) => {
-    return eventRecord.start && new Date(eventRecord.end || eventRecord.start) >= new Date();
-  });
-  return nextEvent?.id || events[0]?.id || "";
+async function saveReschedule(eventId) {
+  if (!isManager()) {
+    return;
+  }
+
+  const startInput = document.querySelector("#rescheduleStart");
+  const endInput = document.querySelector("#rescheduleEnd");
+  const startValue = startInput?.value || "";
+  const endValue = endInput?.value || "";
+
+  if (!startValue || !endValue || new Date(endValue) <= new Date(startValue)) {
+    window.alert("Please choose a valid new start and end time.");
+    return;
+  }
+
+  const eventRecord = getEventById(eventId);
+  if (!eventRecord) {
+    return;
+  }
+
+  let meetTime = null;
+  if (eventRecord.meetTime && eventRecord.start) {
+    const diff = new Date(eventRecord.start).getTime() - new Date(eventRecord.meetTime).getTime();
+    meetTime = new Date(new Date(startValue).getTime() - Math.abs(diff)).toISOString();
+  }
+
+  const { error } = await app.supabase
+    .from(EVENT_TABLE)
+    .update({
+      start_at: toIsoString(startValue),
+      end_at: toIsoString(endValue),
+      meet_time: meetTime,
+      status: "scheduled",
+    })
+    .eq("id", eventId);
+
+  if (error) {
+    window.alert(extractErrorMessage(error));
+    return;
+  }
+
+  await refreshData();
 }
 
-function createSeedState() {
-  const members = [
-    { id: "m1", name: "Amara Bello", role: "Coach", color: "#17324d" },
-    { id: "m2", name: "Jules Carter", role: "Captain", color: "#ec6b56" },
-    { id: "m3", name: "Lina Ortiz", role: "Forward", color: "#4d8cc8" },
-    { id: "m4", name: "Noah Patel", role: "Midfielder", color: "#2c8f78" },
-    { id: "m5", name: "Mia Laurent", role: "Defender", color: "#b85a77" },
-    { id: "m6", name: "Theo Brooks", role: "Defender", color: "#8b6f47" },
-    { id: "m7", name: "Sara Nordin", role: "Goalkeeper", color: "#7b5ea7" },
-    { id: "m8", name: "Kai Mensah", role: "Utility", color: "#2a7598" },
-    { id: "m9", name: "Iris Novak", role: "Winger", color: "#996f1e" },
-    { id: "m10", name: "Zoe Kim", role: "Physio", color: "#3b4a69" },
-  ];
+async function updateAvailability(eventId, memberId, patch) {
+  const payload = {
+    event_id: eventId,
+    user_id: memberId,
+    ...patch,
+  };
 
+  const { error } = await app.supabase
+    .from(AVAILABILITY_TABLE)
+    .upsert(payload, { onConflict: "event_id,user_id" });
+
+  if (error) {
+    window.alert(extractErrorMessage(error));
+    return;
+  }
+
+  await refreshData();
+}
+
+async function handleSeedDemo() {
+  if (!isManager()) {
+    return;
+  }
+
+  if (!window.confirm("Seed a demo schedule for this team? This adds sample events for testing manager and player logins.")) {
+    return;
+  }
+
+  const rows = buildDemoEventRows(state.auth.profile.teamId, state.auth.profile.id);
+  const { error } = await app.supabase.from(EVENT_TABLE).insert(rows);
+  if (error) {
+    window.alert(extractErrorMessage(error));
+    return;
+  }
+
+  await refreshData();
+}
+
+function buildDemoEventRows(teamId, createdBy) {
   const now = new Date();
   const tuesday = nextWeekdayDate(now, 2, 18, 30);
   const thursday = nextWeekdayDate(now, 4, 18, 30);
   const saturday = nextWeekdayDate(now, 6, 15, 0);
   const monday = nextWeekdayDate(now, 1, 19, 15);
   const friday = nextWeekdayDate(now, 5, 20, 0);
-  const tournament = addDays(nextWeekdayDate(now, 6, 9, 0), 14);
 
-  const events = [
-    seedEvent({
-      id: "event-practice-1",
+  return [
+    demoEventRow({
+      teamId,
+      createdBy,
       type: "practice",
       title: "High Tempo Practice",
       startDate: tuesday,
@@ -1370,23 +1525,12 @@ function createSeedState() {
       location: "Northside Arena",
       address: "14 Station Road, Manchester",
       requiredPlayers: 8,
-      notes: "Pressing drill, defensive shape, 15 minutes of finishing.",
-      recurringGroupId: "group-practice-a",
-      attendance: buildSeedAttendance(members, {
-        m1: { response: "available", checkIn: "on_time" },
-        m2: { response: "available" },
-        m3: { response: "available" },
-        m4: { response: "maybe" },
-        m5: { response: "available" },
-        m6: { response: "pending" },
-        m7: { response: "available" },
-        m8: { response: "pending" },
-        m9: { response: "available" },
-        m10: { response: "available" },
-      }),
+      notes: "Pressing drill, defensive shape, and finishing block.",
+      recurringGroupId: makeId("group"),
     }),
-    seedEvent({
-      id: "event-practice-2",
+    demoEventRow({
+      teamId,
+      createdBy,
       type: "practice",
       title: "Shape and Recovery Session",
       startDate: thursday,
@@ -1396,22 +1540,11 @@ function createSeedState() {
       address: "8 Canal Street, Manchester",
       requiredPlayers: 8,
       notes: "Smaller workload before the weekend fixture.",
-      recurringGroupId: "group-practice-b",
-      attendance: buildSeedAttendance(members, {
-        m1: { response: "available" },
-        m2: { response: "available" },
-        m3: { response: "available" },
-        m4: { response: "available" },
-        m5: { response: "pending" },
-        m6: { response: "available" },
-        m7: { response: "available" },
-        m8: { response: "maybe" },
-        m9: { response: "available" },
-        m10: { response: "available" },
-      }),
+      recurringGroupId: makeId("group"),
     }),
-    seedEvent({
-      id: "event-game-1",
+    demoEventRow({
+      teamId,
+      createdBy,
       type: "game",
       title: "League Matchday 6",
       startDate: saturday,
@@ -1421,22 +1554,11 @@ function createSeedState() {
       address: "221 Waterside Way, Manchester",
       opponent: "Harbor United",
       requiredPlayers: 11,
-      notes: "Bring away kit. Video analyst will clip first-half transitions.",
-      attendance: buildSeedAttendance(members, {
-        m1: { response: "available" },
-        m2: { response: "available" },
-        m3: { response: "available" },
-        m4: { response: "available" },
-        m5: { response: "available" },
-        m6: { response: "available" },
-        m7: { response: "available" },
-        m8: { response: "available" },
-        m9: { response: "maybe" },
-        m10: { response: "available" },
-      }),
+      notes: "Bring away kit and travel by 1:45 PM.",
     }),
-    seedEvent({
-      id: "event-social-1",
+    demoEventRow({
+      teamId,
+      createdBy,
       type: "social",
       title: "Team Dinner",
       startDate: friday,
@@ -1445,22 +1567,11 @@ function createSeedState() {
       location: "The Lantern Hall",
       address: "5 Market Lane, Manchester",
       requiredPlayers: 6,
-      notes: "Families are welcome. RSVP helps reserve the right number of seats.",
-      attendance: buildSeedAttendance(members, {
-        m1: { response: "available" },
-        m2: { response: "available" },
-        m3: { response: "maybe" },
-        m4: { response: "available" },
-        m5: { response: "available" },
-        m6: { response: "pending" },
-        m7: { response: "available" },
-        m8: { response: "pending" },
-        m9: { response: "available" },
-        m10: { response: "available" },
-      }),
+      notes: "Families are welcome. RSVP helps reserve seats.",
     }),
-    seedEvent({
-      id: "event-recovery-1",
+    demoEventRow({
+      teamId,
+      createdBy,
       type: "practice",
       title: "Recovery and Analysis",
       startDate: monday,
@@ -1469,118 +1580,14 @@ function createSeedState() {
       location: "Clubhouse Studio",
       address: "3 Newton Terrace, Manchester",
       requiredPlayers: 6,
-      notes: "Light mobility followed by 25 minutes of match review.",
-      attendance: buildSeedAttendance(members, {
-        m1: { response: "available" },
-        m2: { response: "available" },
-        m3: { response: "available" },
-        m4: { response: "pending" },
-        m5: { response: "available" },
-        m6: { response: "pending" },
-        m7: { response: "available" },
-        m8: { response: "maybe" },
-        m9: { response: "available" },
-        m10: { response: "available" },
-      }),
+      notes: "Mobility and match review.",
     }),
-    seedEvent({
-      id: "event-tournament-1",
-      type: "tournament",
-      title: "Spring Cup Qualifier",
-      startDate: tournament,
-      durationHours: 6,
-      meetOffsetMinutes: 50,
-      location: "Central Sports Campus",
-      address: "44 Regent Drive, Leeds",
-      opponent: "Regional pool draw",
-      requiredPlayers: 12,
-      notes: "Packed lunch, medical forms, and travel list due 48 hours before departure.",
-      attendance: buildSeedAttendance(members, {
-        m1: { response: "available" },
-        m2: { response: "available" },
-        m3: { response: "available" },
-        m4: { response: "available" },
-        m5: { response: "available" },
-        m6: { response: "available" },
-        m7: { response: "available" },
-        m8: { response: "pending" },
-        m9: { response: "maybe" },
-        m10: { response: "available" },
-      }),
-    }),
-    {
-      id: "event-game-2",
-      type: "game",
-      title: "Friendly vs West Didsbury",
-      start: "",
-      end: "",
-      meetTime: "",
-      location: "To be confirmed",
-      address: "",
-      opponent: "West Didsbury",
-      requiredPlayers: 11,
-      notes: "Opponent asked for a rain-check. Waiting on the new slot.",
-      status: "postponed",
-      recurringGroupId: "",
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      attendance: buildSeedAttendance(members, {
-        m1: { response: "available" },
-        m2: { response: "available" },
-        m3: { response: "available" },
-        m4: { response: "pending" },
-        m5: { response: "available" },
-        m6: { response: "available" },
-        m7: { response: "pending" },
-        m8: { response: "available" },
-        m9: { response: "maybe" },
-        m10: { response: "available" },
-      }),
-      originalStart: "",
-    },
-  ].sort(sortEvents);
-
-  return {
-    team: {
-      name: "Northside Falcons",
-    },
-    members,
-    events,
-    feed: [
-      {
-        id: makeId("feed"),
-        createdAt: new Date().toISOString(),
-        eventId: "event-game-2",
-        tone: "postpone",
-        text: "Friendly vs West Didsbury was postponed while the clubs confirm a new date.",
-      },
-      {
-        id: makeId("feed"),
-        createdAt: new Date(Date.now() - 1000 * 60 * 35).toISOString(),
-        eventId: "event-game-1",
-        tone: "reminder",
-        text: "Reminder sent for League Matchday 6 to everyone still waiting to RSVP.",
-      },
-      {
-        id: makeId("feed"),
-        createdAt: new Date(Date.now() - 1000 * 60 * 70).toISOString(),
-        eventId: "event-practice-1",
-        tone: "create",
-        text: "High Tempo Practice was added as part of the weekly training block.",
-      },
-    ],
-    ui: {
-      view: "month",
-      anchorDate: toDateKey(new Date()),
-      filterTypes: Object.keys(TYPE_META),
-      selectedEventId: "event-practice-1",
-      showCancelled: false,
-    },
-  };
+  ];
 }
 
-function seedEvent({
-  id,
+function demoEventRow({
+  teamId,
+  createdBy,
   type,
   title,
   startDate,
@@ -1588,64 +1595,200 @@ function seedEvent({
   meetOffsetMinutes,
   location,
   address,
-  opponent = "",
+  opponent = null,
   requiredPlayers,
   notes,
-  recurringGroupId = "",
-  attendance,
+  recurringGroupId = null,
 }) {
   const start = new Date(startDate);
   const end = new Date(start.getTime() + durationHours * 60 * 60 * 1000);
-  const meetTime = new Date(start.getTime() - meetOffsetMinutes * 60 * 1000);
+  const meetTime = meetOffsetMinutes ? new Date(start.getTime() - meetOffsetMinutes * 60 * 1000) : null;
+
   return {
-    id,
+    team_id: teamId,
+    created_by: createdBy,
     type,
     title,
-    start: toInputValue(start),
-    end: toInputValue(end),
-    meetTime: meetOffsetMinutes ? toInputValue(meetTime) : "",
+    start_at: start.toISOString(),
+    end_at: end.toISOString(),
+    meet_time: meetTime ? meetTime.toISOString() : null,
     location,
     address,
     opponent,
-    requiredPlayers,
+    required_players: requiredPlayers,
     notes,
     status: "scheduled",
-    recurringGroupId,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    attendance,
-    originalStart: "",
+    recurring_group_id: recurringGroupId,
   };
 }
 
-function buildSeedAttendance(members, overrides = {}) {
-  return members.reduce((accumulator, member) => {
-    accumulator[member.id] = {
-      response: "pending",
-      checkIn: "pending",
-      ...(overrides[member.id] || {}),
-    };
+function buildEventRecords(eventRows, availabilityRows, memberRows) {
+  const availabilityByEvent = availabilityRows.reduce((accumulator, row) => {
+    const existing = accumulator.get(row.event_id) || [];
+    existing.push(row);
+    accumulator.set(row.event_id, existing);
     return accumulator;
-  }, {});
-}
+  }, new Map());
 
-function pushFeedItem({ eventId = "", tone = "info", text }) {
-  state.feed.unshift({
-    id: makeId("feed"),
-    createdAt: new Date().toISOString(),
-    eventId,
-    tone,
-    text,
+  return eventRows.map((row) => {
+    const attendance = {};
+    const rowAvailability = availabilityByEvent.get(row.id) || [];
+
+    rowAvailability.forEach((entry) => {
+      attendance[entry.user_id] = {
+        response: entry.response,
+        checkIn: entry.check_in,
+        updatedAt: entry.updated_at,
+      };
+    });
+
+    memberRows.forEach((member) => {
+      if (!attendance[member.id]) {
+        attendance[member.id] = {
+          response: "pending",
+          checkIn: "pending",
+          updatedAt: row.updated_at,
+        };
+      }
+    });
+
+    return {
+      id: row.id,
+      type: row.type,
+      title: row.title,
+      start: row.start_at,
+      end: row.end_at,
+      meetTime: row.meet_time,
+      opponent: row.opponent || "",
+      location: row.location || "",
+      address: row.address || "",
+      requiredPlayers: row.required_players,
+      notes: row.notes || "",
+      status: row.status,
+      recurringGroupId: row.recurring_group_id || "",
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      attendance,
+    };
   });
-  state.feed = state.feed.slice(0, 18);
 }
 
-function persist() {
-  state.ui.selectedEventId = ensureSelectedEventId();
-  persistSnapshot();
-  if (syncState.mode === "supabase") {
-    queueCloudSave();
+function buildFeed(eventRecords, availabilityRows, members) {
+  const memberMap = new Map(members.map((member) => [member.id, member]));
+  const eventMap = new Map(eventRecords.map((eventRecord) => [eventRecord.id, eventRecord]));
+  const items = [];
+
+  eventRecords.forEach((eventRecord) => {
+    items.push({
+      createdAt: eventRecord.updatedAt,
+      text: `${eventRecord.title} is ${eventRecord.status}.`,
+    });
+  });
+
+  availabilityRows.forEach((row) => {
+    const eventRecord = eventMap.get(row.event_id);
+    const member = memberMap.get(row.user_id);
+    if (!eventRecord || !member) {
+      return;
+    }
+    if (row.response === "pending" && row.check_in === "pending") {
+      return;
+    }
+    items.push({
+      createdAt: row.updated_at,
+      text: `${member.name} marked ${RESPONSE_META[row.response].toLowerCase()} for ${eventRecord.title}.`,
+    });
+  });
+
+  return items.sort((left, right) => new Date(right.createdAt) - new Date(left.createdAt)).slice(0, 16);
+}
+
+function mapProfileToMember(profile) {
+  return {
+    id: profile.id,
+    name: profile.display_name,
+    role: capitalize(profile.role),
+    username: profile.username,
+    email: profile.email,
+    color: colorForString(profile.display_name),
+  };
+}
+
+function normalizeConfig(rawConfig) {
+  const config = {
+    ...DEFAULT_CONFIG,
+    ...(rawConfig || {}),
+  };
+
+  config.teamId = config.teamId || config.supabaseBoardId || DEFAULT_CONFIG.teamId;
+  config.teamName = config.teamName || DEFAULT_CONFIG.teamName;
+  return config;
+}
+
+function hasSupabaseConfig() {
+  return Boolean(appConfig.supabaseUrl && appConfig.supabaseKey && window.supabase?.createClient);
+}
+
+function clearAuthedState() {
+  state.auth.status = "signed_out";
+  state.auth.view = "sign-in";
+  state.auth.message = "";
+  state.auth.profile = null;
+  state.auth.session = null;
+  state.members = [];
+  state.events = [];
+  state.feed = [];
+}
+
+function setAuthView(nextView) {
+  if (state.auth.status === "setup" || state.auth.status === "loading") {
+    return;
   }
+  state.auth.view = nextView;
+  state.auth.message = "";
+  renderAuth();
+}
+
+function isSignedIn() {
+  return state.auth.status === "signed_in" && Boolean(state.auth.profile);
+}
+
+function isManager() {
+  return isSignedIn() && state.auth.profile.role === "manager";
+}
+
+function loadUiState() {
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) {
+      return defaultUiState();
+    }
+    const parsed = JSON.parse(raw);
+    return {
+      ...defaultUiState(),
+      ...parsed,
+      filterTypes:
+        Array.isArray(parsed.filterTypes) && parsed.filterTypes.length
+          ? parsed.filterTypes.filter((type) => TYPE_META[type])
+          : Object.keys(TYPE_META),
+    };
+  } catch (error) {
+    return defaultUiState();
+  }
+}
+
+function defaultUiState() {
+  return {
+    view: "month",
+    anchorDate: toDateKey(new Date()),
+    filterTypes: Object.keys(TYPE_META),
+    selectedEventId: "",
+    showCancelled: false,
+  };
+}
+
+function persistUi() {
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state.ui));
 }
 
 function syncActiveView() {
@@ -1768,10 +1911,14 @@ function toInputValue(input) {
   return local.toISOString().slice(0, 16);
 }
 
-function shiftDateTime(value, days) {
-  const date = new Date(value);
+function toIsoString(localDateTime) {
+  return new Date(localDateTime).toISOString();
+}
+
+function shiftIsoByDays(isoString, days) {
+  const date = new Date(isoString);
   date.setDate(date.getDate() + days);
-  return toInputValue(date);
+  return date.toISOString();
 }
 
 function isSameDay(left, right) {
@@ -1821,6 +1968,25 @@ function makeId(prefix) {
   return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function colorForString(value) {
+  const palette = ["#17324d", "#ec6b56", "#4d8cc8", "#2c8f78", "#b85a77", "#8b6f47", "#7b5ea7", "#2a7598", "#996f1e"];
+  const hash = [...String(value || "")].reduce((accumulator, char) => accumulator + char.charCodeAt(0), 0);
+  return palette[hash % palette.length];
+}
+
+function extractErrorMessage(error) {
+  if (!error) {
+    return "Unknown error.";
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  if (typeof error.message === "string" && error.message.trim()) {
+    return error.message.trim();
+  }
+  return "Unknown error.";
+}
+
 function escapeText(value) {
   return String(value || "");
 }
@@ -1837,7 +2003,3 @@ function escapeHtml(value) {
 function escapeAttribute(value) {
   return escapeHtml(value);
 }
-
-window.appState = {
-  reset: handleResetDemo,
-};

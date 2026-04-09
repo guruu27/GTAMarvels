@@ -1,6 +1,13 @@
 # TeamFlow Scheduler
 
-A static scheduling web app inspired by SportEasy's calendar flow, designed to run on GitHub Pages and optionally store shared data in Supabase.
+A GitHub Pages friendly scheduling app inspired by SportEasy, now backed by Supabase Auth and role-based database access.
+
+## What changed
+
+- Managers can create and edit events, postpone fixtures, seed demo data, and view the complete team availability board.
+- Players can sign in, reset their password, view upcoming events, and submit only their own availability.
+- Username or email can be used for sign in.
+- Password reset is handled through Supabase email recovery links.
 
 ## Stack
 
@@ -8,59 +15,134 @@ A static scheduling web app inspired by SportEasy's calendar flow, designed to r
 - Modern CSS
 - Vanilla JavaScript
 - GitHub Pages for hosting
-- Supabase for optional cloud persistence
+- Supabase Auth + Postgres + Row Level Security
 
-## Features
-
-- Month, week, and agenda calendar views
-- Event creation and editing
-- Weekly recurring event creation
-- Game, practice, tournament, and team-event types
-- Attendance tracking with RSVP and check-in states
-- Cancel, postpone, restore, and reschedule flows
-- Update feed and seeded demo data
-- Local-only mode or shared Supabase-backed mode
-
-## Run locally
-
-From `/root/SportEasy`:
+## Local run
 
 ```bash
+cd /root/SportEasy
 python3 -m http.server 4173
 ```
 
 Then open `http://localhost:4173`.
 
-## Local config
+## Config
 
-- `config.js` keeps the app in local browser-storage mode.
-- `config.example.js` shows the values needed for Supabase mode.
+Edit `config.js` locally or provide these through GitHub Actions:
 
-## Supabase setup
+```js
+window.TEAMFLOW_CONFIG = {
+  supabaseUrl: "https://YOUR_PROJECT.supabase.co",
+  supabaseKey: "YOUR_SUPABASE_PUBLISHABLE_KEY",
+  teamId: "gta-marvels",
+  teamName: "GTA Marvels",
+};
+```
 
-1. Create a new Supabase project.
-2. In the Supabase SQL editor, run `supabase-schema.sql`.
-3. Open `Project Settings -> API` and copy:
-   - Project URL
-   - Publishable key
-4. Pick a board id, for example `northside-falcons`.
+`config.example.js` shows the same structure.
+
+## Supabase project setup
+
+### 1. Create the project
+
+- In Supabase, create a normal blank project.
+- Choose the region closest to your team.
+- If Supabase asks for a framework example, choose `JavaScript` or `Vanilla JS`.
+
+### 2. Run the schema
+
+- Open `SQL Editor`
+- Run `supabase-schema.sql`
+
+This creates:
+
+- `teams`
+- `team_profiles`
+- `team_events`
+- `team_event_availability`
+- role-based RLS policies
+- helper SQL functions for onboarding accounts
+
+### 3. Configure Auth URLs
+
+Open `Authentication -> URL Configuration` and add:
+
+- `Site URL`
+  - For local testing: `http://localhost:4173`
+  - For GitHub Pages: `https://YOUR_USERNAME.github.io/YOUR_REPO`
+- `Redirect URLs`
+  - `http://localhost:4173/`
+  - `https://YOUR_USERNAME.github.io/YOUR_REPO/`
+
+These are required for password reset links to send users back into the app.
+
+### 4. Create auth users
+
+Open `Authentication -> Users` and create the accounts you need, for example:
+
+- one manager account
+- one or more player accounts
+
+Use real email addresses if you want password reset emails to work.
+
+### 5. Link users to the team and roles
+
+After creating the auth users, run SQL like this in the SQL editor:
+
+```sql
+select public.ensure_team_exists('gta-marvels', 'GTA Marvels');
+
+select public.create_profile_for_email(
+  'manager@example.com',
+  'gta-marvels',
+  'manager01',
+  'Team Manager',
+  'manager'
+);
+
+select public.create_profile_for_email(
+  'player@example.com',
+  'gta-marvels',
+  'player07',
+  'Player Seven',
+  'player'
+);
+```
+
+Now the manager can see the full team board, while the player can only update their own row.
 
 ## GitHub Pages deployment
 
-This repo includes `.github/workflows/deploy-pages.yml` for GitHub Pages.
+### 1. Enable Pages
 
-1. Push this project to a GitHub repository.
-2. In GitHub, open `Settings -> Pages`.
-3. Set `Source` to `GitHub Actions`.
-4. In `Settings -> Secrets and variables -> Actions`, add:
-   - `SUPABASE_URL`
-   - `SUPABASE_PUBLISHABLE_KEY`
-   - `SUPABASE_BOARD_ID`
-5. Push to `main` or run the workflow manually.
-6. GitHub will publish the site at:
-   - `https://YOUR_USERNAME.github.io/YOUR_REPO/`
+In GitHub:
 
-## Notes
+- `Settings -> Pages`
+- Set `Source` to `GitHub Actions`
 
-- The Supabase policies in `supabase-schema.sql` make the board publicly editable. That is fine for a public demo or openly shared team board.
-- If you need private team access, the next step is adding Supabase Auth and stricter Row Level Security policies.
+### 2. Add Actions secrets
+
+In `Settings -> Secrets and variables -> Actions`, add:
+
+- `SUPABASE_URL`
+- `SUPABASE_PUBLISHABLE_KEY`
+- `SUPABASE_BOARD_ID`
+
+`SUPABASE_BOARD_ID` is still used by the workflow as the team id. Set it to the same value as `teamId`, for example:
+
+- `gta-marvels`
+
+### 3. Push and deploy
+
+Push to `main` or re-run the Pages workflow.
+
+Your site will be available at:
+
+- `https://YOUR_USERNAME.github.io/YOUR_REPO/`
+
+## Important notes
+
+- Use the Supabase `Publishable key`, never the `service_role` key, in the browser.
+- Public sign-up is not implemented in this app. Accounts are provisioned in Supabase Auth and then linked to roles with SQL.
+- The login form accepts username or email. Password resets still go to the user's email address.
+- The database policies, not just the UI, enforce that players can only read and write their own availability.
