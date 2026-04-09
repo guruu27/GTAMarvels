@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TeamFlow Scheduler</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=Space+Grotesk:wght@500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <section class="brand-card panel sheen">
+          <p class="eyebrow">Scheduling Feature Clone</p>
+          <h1>TeamFlow</h1>
+          <p class="muted">
+            A local-first scheduling web app inspired by SportEasy's calendar,
+            attendance, and last-minute change workflows.
+          </p>
+        </section>
+
+        <section class="panel">
+          <div class="section-heading">
+            <p class="eyebrow">Filters</p>
+            <h2>Event types</h2>
+          </div>
+          <div id="typeFilters" class="filter-grid"></div>
+        </section>
+
+        <section class="panel">
+          <div class="section-heading">
+            <p class="eyebrow">Moment Map</p>
+            <h2>Next 10 days</h2>
+          </div>
+          <div id="miniTimeline" class="mini-timeline"></div>
+        </section>
+
+        <section class="panel">
+          <div class="section-heading">
+            <p class="eyebrow">Update feed</p>
+            <h2>What changed</h2>
+          </div>
+          <div id="feedList" class="feed-list"></div>
+        </section>
+      </aside>
+
+      <main class="workspace">
+        <section class="hero panel sheen">
+          <div class="hero-copy">
+            <p class="eyebrow">Scheduling Hub</p>
+            <h2 id="heroTitle">Northside Falcons Calendar</h2>
+            <p id="heroSubtitle" class="muted"></p>
+            <p id="syncNotice" class="helper-line"></p>
+            <div class="hero-actions">
+              <button id="createEventBtn" class="primary-btn">Create event</button>
+              <button id="resetDemoBtn" class="ghost-btn">Reset demo</button>
+            </div>
+          </div>
+
+          <div class="hero-stats">
+            <article class="stat-card">
+              <span>Next event</span>
+              <strong id="nextEventLabel">-</strong>
+            </article>
+            <article class="stat-card">
+              <span>Confirmed</span>
+              <strong id="availabilityLabel">-</strong>
+            </article>
+            <article class="stat-card">
+              <span>Replies waiting</span>
+              <strong id="pendingLabel">-</strong>
+            </article>
+          </div>
+        </section>
+
+        <section class="toolbar panel">
+          <div class="toolbar-row">
+            <div id="viewSwitch" class="view-switch" aria-label="Calendar view">
+              <button class="active" data-view="month">Month</button>
+              <button data-view="week">Week</button>
+              <button data-view="agenda">Agenda</button>
+            </div>
+
+            <div class="nav-group">
+              <button data-nav="prev" class="ghost-btn">Back</button>
+              <button id="todayBtn" class="ghost-btn">Today</button>
+              <button data-nav="next" class="ghost-btn">Forward</button>
+            </div>
+          </div>
+
+          <div class="toolbar-row compact">
+            <div id="rangeLabel" class="range-label"></div>
+            <label class="toggle">
+              <input type="checkbox" id="showCancelledToggle" />
+              <span>Show cancelled events</span>
+            </label>
+          </div>
+        </section>
+
+        <section id="calendarSurface" class="calendar-surface panel"></section>
+      </main>
+
+      <aside class="details-column">
+        <section class="panel agenda-panel">
+          <div class="section-heading">
+            <p class="eyebrow">Upcoming</p>
+            <h2>Agenda snapshot</h2>
+          </div>
+          <div id="agendaPreview" class="agenda-preview"></div>
+        </section>
+
+        <section class="panel roster-panel">
+          <div class="section-heading">
+            <p class="eyebrow">Availability</p>
+            <h2>Squad board</h2>
+          </div>
+          <div id="rosterBoard" class="roster-board"></div>
+        </section>
+
+        <section class="panel drawer-panel">
+          <div id="eventDrawer" class="event-drawer empty">
+            <div class="empty-state">
+              <p class="eyebrow">Event details</p>
+              <h2>Pick an event</h2>
+              <p class="muted">
+                Click any event card to edit scheduling details, send reminders,
+                reschedule fixtures, or track attendance live.
+              </p>
+            </div>
+          </div>
+        </section>
+      </aside>
+    </div>
+
+    <div id="eventModal" class="modal hidden" aria-hidden="true">
+      <div class="modal-backdrop" data-close-modal="true"></div>
+      <div class="modal-card">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">Event editor</p>
+            <h2 id="modalTitle">Create event</h2>
+          </div>
+          <button class="icon-btn" data-close-modal="true" aria-label="Close">
+            &times;
+          </button>
+        </div>
+
+        <form id="eventForm" class="event-form">
+          <input type="hidden" name="eventId" />
+
+          <div class="form-grid two-col">
+            <label>
+              <span>Type</span>
+              <select name="type" required>
+                <option value="practice">Practice</option>
+                <option value="game">Game</option>
+                <option value="tournament">Tournament</option>
+                <option value="social">Team event</option>
+              </select>
+            </label>
+
+            <label>
+              <span>Title</span>
+              <input name="title" type="text" placeholder="Thursday Night Session" required />
+            </label>
+          </div>
+
+          <div class="form-grid two-col">
+            <label>
+              <span>Starts</span>
+              <input name="start" type="datetime-local" required />
+            </label>
+
+            <label>
+              <span>Ends</span>
+              <input name="end" type="datetime-local" required />
+            </label>
+          </div>
+
+          <div class="form-grid two-col">
+            <label>
+              <span>Meeting time</span>
+              <input name="meetTime" type="datetime-local" />
+            </label>
+
+            <label>
+              <span>Opponent</span>
+              <input name="opponent" type="text" placeholder="Only for fixtures or scrimmages" />
+            </label>
+          </div>
+
+          <div class="form-grid two-col">
+            <label>
+              <span>Venue</span>
+              <input name="location" type="text" placeholder="Northside Arena" />
+            </label>
+
+            <label>
+              <span>Address</span>
+              <input
+                name="address"
+                type="text"
+                placeholder="14 Station Road, Manchester"
+              />
+            </label>
+          </div>
+
+          <div class="form-grid two-col">
+            <label>
+              <span>Required players</span>
+              <input name="requiredPlayers" type="number" min="1" max="60" value="8" />
+            </label>
+
+            <label class="checkbox-row">
+              <input name="repeatWeekly" type="checkbox" />
+              <span>Repeat weekly</span>
+            </label>
+          </div>
+
+          <label>
+            <span>Weekly occurrences</span>
+            <input name="repeatCount" type="number" min="1" max="20" value="6" />
+          </label>
+
+          <label>
+            <span>Notes</span>
+            <textarea
+              name="notes"
+              rows="4"
+              placeholder="Warm-up focus, arrival notes, weather backup plan..."
+            ></textarea>
+          </label>
+
+          <div class="form-actions">
+            <button type="button" class="ghost-btn" data-close-modal="true">Cancel</button>
+            <button type="submit" class="primary-btn">Save event</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="config.js"></script>
+    <script src="app.js" defer></script>
+  </body>
+</html>

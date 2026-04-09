@@ -1,0 +1,63 @@
+name: Deploy GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Prepare static site
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+          SUPABASE_BOARD_ID: ${{ secrets.SUPABASE_BOARD_ID }}
+        run: |
+          mkdir -p dist
+          cp index.html styles.css app.js README.md .nojekyll dist/
+          if [ -n "$SUPABASE_URL" ] && [ -n "$SUPABASE_PUBLISHABLE_KEY" ] && [ -n "$SUPABASE_BOARD_ID" ]; then
+            {
+              echo 'window.TEAMFLOW_CONFIG = {'
+              echo '  storageMode: "supabase",'
+              printf '  supabaseUrl: "%s",\n' "$SUPABASE_URL"
+              printf '  supabaseKey: "%s",\n' "$SUPABASE_PUBLISHABLE_KEY"
+              printf '  supabaseBoardId: "%s"\n' "$SUPABASE_BOARD_ID"
+              echo '};'
+            } > dist/config.js
+          else
+            cp config.js dist/config.js
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./dist
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
